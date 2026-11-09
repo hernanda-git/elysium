@@ -117,6 +117,7 @@ python -m venv .venv
 | `elys list [--all]` | show the saved watchlist |
 | `elys watch [--seconds N] [--no-stream] [--no-tg]` | monitor + copy trade on paper |
 | `elys paper` | alias for `watch` |
+| `elys replay [--minutes N] [--seconds N]` | rewind the detection floor and replay recent whale trades through the engine (backtest-style; fills at the observed trade price, staleness kept in `latency_ms`) |
 | `elys report [--json]` | win rate, expectancy, profit factor, drawdown, attribution |
 | `elys status` | chain head, watcher count, open positions, equity |
 | `elys tg sync [--pages N]` | pull the public channel without any login |
@@ -251,10 +252,13 @@ State lives in `data/elys.db` (WAL). Logs in `data/elys.log`. `data/` is gitigno
   block hits in 25 s, each a `permit2TransferAndMulticall` transaction — the fast path
   is real, not theoretical.
 - Live watch runs: the desk streamed 200–1 200 blocks per 30 s with the stream up and
-  single-digit 429s. Short runs produced no fills because the watchlist averages well
-  under one qualifying buy per wallet-hour; fills are recorded in `data/elys.db` as the
-  desk runs, and `elys report` is the source of truth. The fill path itself is covered
-  by the deterministic monitor/strategy/paper tests above.
+  single-digit 429s. A 5-minute run saw 8 block hits from watched wallets but no
+  qualifying buy, because the watchlist averages well under one copyable buy per
+  wallet-hour — market cadence, not a broken pipeline.
+- `elys replay --minutes 25 --seconds 120` on live data produced 11 signals, 5 paper
+  fills ($22.50–$33.00 each), 4 tokens vetoed on liquidity and 1 on the token cap, one
+  whale-exit close (+$1.61) and one stop-loss close (−$22.11). The replay ledger was
+  reset afterwards; run it yourself to re-check the pipeline end to end.
 
 ---
 
@@ -265,7 +269,8 @@ State lives in `data/elys.db` (WAL). Logs in `data/elys.log`. `data/` is gitigno
   Removing that second means decoding Swap logs yourself from the RPC
   (`rpc.elysium.kinetiq.xyz`) and maintaining the router/pool ABI mapping.
 - **Price** is the whale's realised pool price. A real copy lands later and moves the
-  pool; the 150 bps slippage model is a blunt approximation of that impact.
+  pool; the 150 bps slippage model is a blunt approximation of that impact. `replay`
+  fills at that same observed price, so it is a pipeline check, not a PnL forecast.
 - **Execution** is paper only. Going live needs a signer, gas management, allowance
   handling, nonce discipline and a router adapter per launchpad (Montra, Ascend, …).
 - **Data** has no SLA. The public API can rate-limit; the client retries with backoff
@@ -274,5 +279,10 @@ State lives in `data/elys.db` (WAL). Logs in `data/elys.log`. `data/` is gitigno
   tiny winners can look perfect. The diversification, activity and PnL components are
   there to keep such wallets from dominating the list, but the paper report — not the
   leaderboard — is the source of truth for whether copying them works.
+
+Short watch windows can legitimately show zero signals: 25 wallets that buy a few
+times a day produce under one copyable buy per five minutes. That is why `replay` and
+`report` exist — use replay to exercise the desk, and let a long-running `watch` build
+the realised record.
 
 Nothing here is financial advice, and paper results are not live results.

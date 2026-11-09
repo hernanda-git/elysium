@@ -141,6 +141,12 @@ async def cmd_watch(args) -> int:
     queue: asyncio.Queue[Signal] = asyncio.Queue(maxsize=2000)
     monitor = Monitor(settings, intel, store, queue)
     count = monitor.load_whales(limit=settings.max_watch)
+    replay_minutes = int(getattr(args, "minutes", 0) or 0)
+    if replay_minutes:
+        floor = now_ts() - replay_minutes * 60
+        for addr in monitor.whales:
+            monitor._last_ts[addr] = floor
+        print(cyan(f"replay: rewound detection floor by {replay_minutes} min"))
     if count == 0:
         print(red("no active whales; run `elys discover`"))
         return 1
@@ -388,6 +394,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("paper", help="alias for watch")
     p.add_argument("--seconds", type=int, default=0)
+    p.add_argument("--no-stream", action="store_true")
+    p.add_argument("--no-tg", action="store_true")
+    p.add_argument("--limit", type=int)
+    p.add_argument("--top", type=int)
+    p.add_argument("--mark-interval", type=float, default=3.0)
+    p.add_argument("--status-interval", type=float, default=30.0)
+    p.set_defaults(func=cmd_watch)
+
+    p = sub.add_parser("replay", help="replay recent whale trades through the paper engine")
+    p.add_argument("--minutes", type=int, default=30, help="how far back to rewind the detection floor")
+    p.add_argument("--seconds", type=int, default=90, help="wall-clock budget for the replay")
     p.add_argument("--no-stream", action="store_true")
     p.add_argument("--no-tg", action="store_true")
     p.add_argument("--limit", type=int)
