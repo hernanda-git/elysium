@@ -8,6 +8,7 @@ import json
 import logging
 import logging.handlers
 import sys
+import threading
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -206,6 +207,8 @@ async def cmd_watch(args) -> int:
                 pass
 
     async def ticker() -> None:
+        last_chain = 0.0
+        store.set_meta("heartbeat_ts", now_ts())
         while not stop.is_set():
             try:
                 await asyncio.wait_for(stop.wait(), timeout=args.status_interval)
@@ -215,6 +218,22 @@ async def cmd_watch(args) -> int:
             status = monitor.status()
             desk = paper.status()
             cash, _pos, equity = paper.equity()
+            now = now_ts()
+            store.set_meta("heartbeat_ts", now)
+            store.set_meta("stream_connected", "1" if status["stream_connected"] else "0")
+            store.set_meta("blocks_seen", status["blocks_seen"])
+            if now - last_chain >= 60:
+                try:
+                    chain = await intel.stats()
+                    store.set_meta("chain_head", chain.get("headBlock") or 0)
+                    store.set_meta("chain_block_ms", chain.get("avgBlockTimeMs") or 0)
+                    store.set_meta(
+                        "chain_hype_usd",
+                        round(float((chain.get("hype") or {}).get("usd") or 0), 4),
+                    )
+                    last_chain = now
+                except Exception as exc:
+                    log.debug("chain stats failed: %s", exc)
             print(
                 dim(
                     f"-- {status['wallets']} whales | blocks {status['blocks_seen']} "
@@ -226,6 +245,21 @@ async def cmd_watch(args) -> int:
                 ),
                 flush=True,
             )
+
+    async def rebalancer() -> None:
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=settings.rebalance_hours * 3600)
+                return
+            except asyncio.TimeoutError:
+                pass
+            try:
+                rows = await discover(settings, intel, store)
+                monitor.whales = {w["address"]: w for w in store.load_whales(limit=settings.max_watch)}
+                monitor.watch = set(monitor.whales)
+                log.info("rebalanced watchlist: %d wallets", len(rows))
+            except Exception as exc:
+                log.warning("rebalance failed: %s", exc)
 
     async def telegram_loop() -> None:
         if tg is None:
@@ -241,6 +275,8 @@ async def cmd_watch(args) -> int:
     ]
     if tg is not None:
         tasks.append(asyncio.create_task(telegram_loop(), name="telegram"))
+    if settings.rebalance_hours > 0 and not args.seconds and not replay_minutes:
+        tasks.append(asyncio.create_task(rebalancer(), name="rebalance"))
 
     print(
         bold("ELYSIUM PAPER DESK")
@@ -269,6 +305,23 @@ async def cmd_watch(args) -> int:
     desk = paper.status()
     print(dim(f"stopped: {desk}"))
     return 0
+
+
+async def cmd_serve(args) -> int:
+    """Run the desk and the read-only dashboard in one process."""
+    from .web import run_http_server
+
+    settings = Settings.from_env()
+    settings.ensure_dirs()
+    Store(settings.db_path).close()  # create before the read-only web opens it
+    threading.Thread(
+        target=run_http_server,
+        args=(settings, args.host, args.port),
+        name="web",
+        daemon=True,
+    ).start()
+    print(cyan(f"dashboard http://{args.host}:{args.port}"))
+    return await cmd_watch(args)
 
 
 async def cmd_report(args) -> int:
@@ -400,6 +453,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mark-interval", type=float, default=3.0)
     p.add_argument("--status-interval", type=float, default=30.0)
     p.set_defaults(func=cmd_watch)
+
+    p = sub.add_parser("serve", help="run the desk with the web dashboard")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=18086)
+    p.add_argument("--seconds", type=int, default=0)
+    p.add_argument("--no-stream", action="store_true")
+    p.add_argument("--no-tg", action="store_true")
+    p.add_argument("--limit", type=int)
+    p.add_argument("--top", type=int)
+    p.add_argument("--mark-interval", type=float, default=3.0)
+    p.add_argument("--status-interval", type=float, default=30.0)
+    p.set_defaults(func=cmd_serve)
 
     p = sub.add_parser("replay", help="replay recent whale trades through the paper engine")
     p.add_argument("--minutes", type=int, default=30, help="how far back to rewind the detection floor")

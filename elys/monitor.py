@@ -53,6 +53,7 @@ class Monitor:
         self.store = store
         self.queue = queue
         self.whales: dict[str, dict] = {}
+        self.watch: set[str] = set()
         self.stream = BlockStream(settings)
         self._stop = asyncio.Event()
         self._seen: dict[str, int] = {}
@@ -71,6 +72,7 @@ class Monitor:
     def load_whales(self, limit: int | None = None) -> int:
         rows = self.store.load_whales(active_only=True, limit=limit)
         self.whales = {w["address"]: w for w in rows}
+        self.watch = set(self.whales)
         start = now_ts()
         for addr in self.whales:
             self._last_ts[addr] = start - 2
@@ -106,12 +108,11 @@ class Monitor:
     # ── fast path ─────────────────────────────────────────────────────────────
 
     async def _stream_loop(self) -> None:
-        watch = set(self.whales)
         async for block in self.stream.blocks():
             if self._stop.is_set():
                 break
             txs = block.get("txs") or []
-            hits = BlockStream.touched(txs, watch)
+            hits = BlockStream.touched(txs, self.watch)
             if not hits:
                 continue
             block_ts = int((block.get("block") or {}).get("ts") or now_ts())
@@ -129,9 +130,9 @@ class Monitor:
     # ── polling fallback ──────────────────────────────────────────────────────
 
     async def _poll_loop(self) -> None:
-        addresses = list(self.whales)
         cursor = 0
         while not self._stop.is_set():
+            addresses = list(self.whales)
             if not addresses:
                 await asyncio.sleep(self.settings.poll_interval_s)
                 continue

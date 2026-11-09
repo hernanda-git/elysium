@@ -119,6 +119,7 @@ python -m venv .venv
 | `elys list [--all]` | show the saved watchlist |
 | `elys watch [--seconds N] [--no-stream] [--no-tg]` | monitor + copy trade on paper |
 | `elys paper` | alias for `watch` |
+| `elys serve [--host H] [--port P]` | run the desk **and** the web dashboard in one process |
 | `elys replay [--minutes N] [--seconds N]` | rewind the detection floor and replay recent whale trades through the engine (backtest-style; fills at the observed trade price, staleness kept in `latency_ms`) |
 | `elys report [--json]` | win rate, expectancy, profit factor, drawdown, attribution |
 | `elys status` | chain head, watcher count, open positions, equity |
@@ -216,6 +217,54 @@ the starting balance stops everything.
 
 ---
 
+## Dashboard
+
+`elys serve` runs the desk and a zero-dependency dashboard (stdlib `ThreadingHTTPServer`,
+server-rendered HTML, one small JSON poller). The engine writes; the web thread claims
+read-only SQLite connections against the WAL database.
+
+| Page | Content |
+| --- | --- |
+| `/` | equity, realised PnL, win rate, open exposure, open positions, latest signals, watchlist |
+| `/positions` | open and closed fills with entry/mark, PnL, exit reason |
+| `/signals` | every detected swap with decision, reason and detection latency |
+| `/whales` | the copyable watchlist with score, win rate, trades, realised, last trade |
+| `/alerts` | the public channel's posts, linked back to the explorer |
+
+`/healthz` reports worker heartbeat and stream state; `/api/summary` feeds the live
+status strip. When `ELYS_WEB_PASSWORD` is set the dashboard requires HTTP Basic auth
+(user `ELYS_WEB_USER`, default `elys`). The watchlist re-runs discovery every
+`ELYS_REBALANCE_HOURS` (default 6).
+
+Design rules: tables and one figure strip, tabular numbers, one accent, semantic colour
+always paired with a label, no gradients, no icon-only actions, no card per scalar.
+
+---
+
+## Deployment
+
+Live at `https://elysium.warga-digital.com` on `fspmi-hostinger` (46.202.155.192),
+following the `engine.warga-digital.com` pattern:
+
+| Piece | Location |
+| --- | --- |
+| App + venv | `/home/valarion/apps/elysium` |
+| Service | `systemd elysium-desk.service` → `127.0.0.1:18086` |
+| Proxy | OpenLiteSpeed vhost `deploy/vhost.conf` (`respBuffer 0`) |
+| DNS | proxied Cloudflare A record → 46.202.155.192 |
+
+```bash
+# on the host, from the repo checkout
+python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/python -m elys init
+.venv/bin/python -m elys discover --top 32
+sudo cp deploy/elysium-desk.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now elysium-desk
+sudo /usr/local/lsws/bin/lswsctrl reload
+```
+
+---
+
 ## Layout
 
 ```
@@ -233,7 +282,8 @@ elys/
   store.py       sqlite schema and ledger
   report.py      performance summary
   cli.py         command line
-tests/           52 tests covering scoring, parsing, detection, fills, exits and gates
+  web.py         dashboard (stdlib HTTP, read-only SQLite)
+tests/           55 tests covering scoring, parsing, detection, fills, exits, gates and dashboard
 ```
 
 State lives in `data/elys.db` (WAL). Logs in `data/elys.log`. `data/` is gitignored.

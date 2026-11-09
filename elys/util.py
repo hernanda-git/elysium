@@ -53,6 +53,8 @@ def fmt_usd(value: float | None) -> str:
         return f"{sign}${value / 1_000_000:,.2f}M"
     if value >= 1_000:
         return f"{sign}${value / 1_000:,.1f}K"
+    if value == 0:
+        return "$0.00"
     if value >= 1:
         return f"{sign}${value:,.2f}"
     return f"{sign}${value:,.4f}"

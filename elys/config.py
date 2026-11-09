@@ -110,6 +110,7 @@ class Settings:
     # monitoring
     poll_interval_s: float = 20.0
     stream_enabled: bool = True
+    rebalance_hours: float = 6.0
 
     # telegram
     tg_channel: str = "elysiumecoalerts"
@@ -117,6 +118,10 @@ class Settings:
     tg_api_id: int = 0
     tg_api_hash: str = ""
     tg_phone: str = ""
+
+    # web dashboard
+    web_user: str = "elys"
+    web_password: str = ""
 
     # misc
     user_agent: str = "elysium-copytrader/0.1 (+https://elysium.eco)"
@@ -174,9 +179,12 @@ class Settings:
             discover_min_recent_buys=_int("ELYS_DISCOVER_MIN_RECENT_BUYS", 1),
             poll_interval_s=_float("ELYS_POLL_INTERVAL_S", 20.0),
             stream_enabled=_bool("ELYS_STREAM", True),
+            rebalance_hours=_float("ELYS_REBALANCE_HOURS", 6.0),
             tg_channel=_str("ELYS_TG_CHANNEL", "elysiumecoalerts"),
             tg_interval_s=_float("ELYS_TG_INTERVAL_S", 5.0),
             tg_api_id=_int("TG_API_ID", 0),
             tg_api_hash=_str("TG_API_HASH", ""),
             tg_phone=_str("TG_PHONE", ""),
+            web_user=_str("ELYS_WEB_USER", "elys"),
+            web_password=_str("ELYS_WEB_PASSWORD", ""),
         )
