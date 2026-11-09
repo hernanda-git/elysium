@@ -162,3 +162,10 @@ def test_rug_alert_closes_position(tmp_path):
     decision = asyncio.run(strategy.on_tg_event({"kind": "rug_warning", "token": TOKEN}))
     assert decision is not None and decision.action == "close"
     assert store.positions("closed")[0]["exit_reason"] == "rug_alert"
+
+
+def test_missing_token_metadata_is_skipped(tmp_path):
+    strategy, *_ = _setup(tmp_path, meta={})
+    decision = asyncio.run(strategy.on_signal(_signal()))
+    assert decision.action == "skip"
+    assert "metadata" in decision.reason

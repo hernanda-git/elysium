@@ -129,6 +129,8 @@ class Intel:
                     raise IntelError(f"HTTP {response.status_code} for {path}")
                 self._bucket.reward()
                 data = response.json()
+                if data is None:
+                    raise IntelError(f"empty JSON body for {path}")
                 if ttl:
                     self._cache[key] = (time.monotonic() + ttl, data)
                     if len(self._cache) > 4096:

@@ -244,9 +244,9 @@ always paired with a label, no gradients, no icon-only actions, no card per scal
 ## Deployment
 
 Live at `https://elysium.warga-digital.com` on `fspmi-hostinger` (46.202.155.192),
-following the `engine.warga-digital.com` pattern. The dashboard is behind HTTP Basic
-auth; the password lives in `ELYS_WEB_PASSWORD` in the host `.env` (0600) and in the
-untracked `data/web-password.txt` on the workstation.
+following the `engine.warga-digital.com` pattern. The dashboard is public; set
+`ELYS_WEB_PASSWORD` in the host `.env` to require HTTP Basic auth (user
+`ELYS_WEB_USER`, default `elys`).
 
 | Piece | Location |
 | --- | --- |

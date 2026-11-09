@@ -66,6 +66,8 @@ class CopyStrategy:
             meta = await self.intel.token(signal.token)
         except IntelError as exc:
             return self._skip(f"token lookup failed: {exc}")
+        if not isinstance(meta, dict) or not meta:
+            return self._skip("token metadata missing")
 
         veto = self._token_veto(meta)
         if veto:
