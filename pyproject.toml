@@ -1,0 +1,14 @@
+[project]
+name = "elysium"
+version = "0.1.0"
+description = "Elysium whale discovery, copy-trade monitoring and paper execution"
+requires-python = ">=3.11"
+dependencies = ["httpx>=0.28"]
+
+[project.optional-dependencies]
+tg = ["telethon>=1.36"]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
