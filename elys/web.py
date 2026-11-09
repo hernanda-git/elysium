@@ -118,8 +118,8 @@ JS = """
   function money(n){ if(n==null) return "\\u2013";
     var a=Math.abs(n);
     if(a>=1e6) return (n<0?"-":"")+"$"+(a/1e6).toFixed(2)+"M";
-    if(a>=1e3) return (n<0?"-":"")+"$"+(a/1e3).toFixed(1)+"K";
-    return (n<0?"-":"")+"$"+a.toFixed(2); }
+    if(a>=1e4) return (n<0?"-":"")+"$"+(a/1e3).toFixed(1)+"K";
+    return (n<0?"-":"")+"$"+a.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2}); }
   function pct(n){ return n==null ? "\\u2013" : (n*100).toFixed(1)+"%"; }
   function esc(v){ return v==null ? "\\u2013" : String(v); }
   function fmt(key,v){
@@ -248,8 +248,17 @@ def tag(decision: str | None) -> str:
     return f'<span class="tag {cls}">{esc(d)}</span>'
 
 
-def layout(title: str, body: str, *, active: str, settings: Settings) -> str:
+def layout(title: str, body: str, *, active: str, settings: Settings, db: "WebDB") -> str:
     body = body.replace("<table>", '<div class="scroll"><table>').replace("</table>", "</table></div>")
+    summary = db.summary(settings)
+    hb = summary.get("heartbeat_age")
+    live = {
+        "stream": "up" if summary.get("stream") else "down",
+        "heartbeat_age": f"{hb}s ago" if hb is not None else "–",
+        "chain_head": f"{summary['chain_head']:,}" if summary.get("chain_head") else "–",
+        "chain_hype_usd": fmt_usd(summary.get("chain_hype_usd")),
+        "equity": fmt_usd(summary.get("equity")),
+    }
     tabs = "".join(
         f'<a href="{href}" class="{"on" if href == active else ""}">{label}</a>'
         for href, label in NAV
@@ -266,12 +275,12 @@ def layout(title: str, body: str, *, active: str, settings: Settings) -> str:
   <nav class="tabs">{tabs}</nav>
 </div></header>
 <div class="statusline">
-  <span>Updated <b id="updated">–</b></span>
-  <span>Stream <b data-live="stream">–</b></span>
-  <span>Worker <b data-live="heartbeat_age">–</b></span>
-  <span>Chain <b data-live="chain_head">–</b></span>
-  <span class="hide-sm">HYPE <b data-live="chain_hype_usd">–</b></span>
-  <span class="hide-sm">Equity <b data-live="equity">–</b></span>
+  <span>Updated <b id="updated">{esc(time.strftime("%H:%M:%S"))}</b></span>
+  <span>Stream <b data-live="stream" class="{'pos' if summary.get('stream') else 'neg'}">{live['stream']}</b></span>
+  <span>Worker <b data-live="heartbeat_age">{live['heartbeat_age']}</b></span>
+  <span>Chain <b data-live="chain_head">{live['chain_head']}</b></span>
+  <span class="hide-sm">HYPE <b data-live="chain_hype_usd">{live['chain_hype_usd']}</b></span>
+  <span class="hide-sm">Equity <b data-live="equity">{live['equity']}</b></span>
 </div>
 <div class="wrap">
 {body}
@@ -413,7 +422,7 @@ stop {settings.stop_loss_pct * 100:.0f}% · target {settings.take_profit_pct * 1
 trail {settings.trail_arm_pct * 100:.0f}%/{settings.trail_giveback_pct * 100:.0f}% ·
 max hold {settings.max_hold_min}m</p>
 """
-    return layout("Overview", body, active="/", settings=settings)
+    return layout("Overview", body, active="/", settings=settings, db=db)
 
 
 def page_positions(db: WebDB, settings: Settings) -> str:
@@ -466,7 +475,7 @@ def page_positions(db: WebDB, settings: Settings) -> str:
 <h2>Closed</h2>
 {block(closed, True)}
 """
-    return layout("Positions", body, active="/positions", settings=settings)
+    return layout("Positions", body, active="/positions", settings=settings, db=db)
 
 
 def page_signals(db: WebDB, settings: Settings) -> str:
@@ -521,7 +530,7 @@ between the trade timestamp and detection.</p>
 <h2>Why signals were skipped</h2>
 {skip_html}
 """
-    return layout("Signals", body, active="/signals", settings=settings)
+    return layout("Signals", body, active="/signals", settings=settings, db=db)
 
 
 def page_whales(db: WebDB, settings: Settings) -> str:
@@ -568,7 +577,7 @@ def page_whales(db: WebDB, settings: Settings) -> str:
 {table}
 <p class="note">Refreshed by discovery every {settings.rebalance_hours:g}h.</p>
 """
-    return layout("Watchlist", body, active="/whales", settings=settings)
+    return layout("Watchlist", body, active="/whales", settings=settings, db=db)
 
 
 def page_alerts(db: WebDB, settings: Settings) -> str:
@@ -607,7 +616,7 @@ def page_alerts(db: WebDB, settings: Settings) -> str:
 a copied position immediately; the rest is context for the watchlist.</p>
 {body_html}
 """
-    return layout("Alerts", body, active="/alerts", settings=settings)
+    return layout("Alerts", body, active="/alerts", settings=settings, db=db)
 
 
 RENDERERS = {
@@ -685,7 +694,7 @@ class HtmlHandler(BaseHTTPRequestHandler):
             return
         renderer = RENDERERS.get(path)
         if renderer is None:
-            self._send(404, layout("Not found", "<h1>Not found</h1>", active="", settings=self.settings))
+            self._send(404, layout("Not found", "<h1>Not found</h1>", active="", settings=self.settings, db=self.db))
             return
         try:
             self._send(200, renderer(self.db, self.settings))

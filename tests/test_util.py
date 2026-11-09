@@ -38,7 +38,8 @@ def test_clamp():
 
 def test_fmt_usd():
     assert fmt_usd(1_250_000) == "$1.25M"
-    assert fmt_usd(1_500) == "$1.5K"
+    assert fmt_usd(1_500) == "$1,500.00"
+    assert fmt_usd(10_000) == "$10.0K"
     assert fmt_usd(-12.5) == "-$12.50"
     assert fmt_usd(0.0004) == "$0.0004"
 
