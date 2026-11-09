@@ -143,9 +143,8 @@ async def cmd_watch(args) -> int:
     count = monitor.load_whales(limit=settings.max_watch)
     replay_minutes = int(getattr(args, "minutes", 0) or 0)
     if replay_minutes:
-        floor = now_ts() - replay_minutes * 60
-        for addr in monitor.whales:
-            monitor._last_ts[addr] = floor
+        monitor._started = now_ts() - replay_minutes * 60
+        monitor.lookback_s = replay_minutes * 60
         print(cyan(f"replay: rewound detection floor by {replay_minutes} min"))
     if count == 0:
         print(red("no active whales; run `elys discover`"))

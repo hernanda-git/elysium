@@ -61,6 +61,7 @@ class Monitor:
         self._decode_after: dict[str, float] = {}
         self._tasks: set[asyncio.Task] = set()
         self._started = now_ts()
+        self.lookback_s = 900
         self.signals = 0
         self.hits = 0
         self.errors = 0
@@ -167,7 +168,7 @@ class Monitor:
             self._inflight.discard(address)
             return
         self._decode_after[address] = now + 1.2
-        floor = min_ts if min_ts is not None else self._last_ts.get(address, self._started - 5)
+        floor = min_ts if min_ts is not None else max(self._started - 2, now_ts() - int(self.lookback_s))
         try:
             trades = await self.intel.wallet_trades(address, limit=40)
         except IntelError as exc:

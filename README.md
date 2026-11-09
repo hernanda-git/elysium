@@ -81,7 +81,9 @@ flowchart LR
 **Latency model.** Detection is the SSE path (block lands → wallet matched → decoded
 trade fetched). The decoded feed trails the block by roughly a second; the engine
 records that gap per signal in `signals.latency_ms`. Polling is the fallback when the
-stream is down. This is the honest latency of copying on this venue today; it is good
+stream is down: it re-reads a rolling window anchored at monitor start, so indexing
+lag cannot push a trade past a cursor, while a per-wallet decode cooldown bounds the
+request rate. This is the honest latency of copying on this venue today; it is good
 enough for a minute-scale memecoin trade, not for out-running an MEV bot.
 
 ---
