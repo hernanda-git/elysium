@@ -243,20 +243,19 @@ always paired with a label, no gradients, no icon-only actions, no card per scal
 
 ## Deployment
 
-Live at `https://elysium.warga-digital.com` on `fspmi-hostinger` (46.202.155.192),
-following the `engine.warga-digital.com` pattern. The dashboard is public; set
-`ELYS_WEB_PASSWORD` in the host `.env` to require HTTP Basic auth (user
-`ELYS_WEB_USER`, default `elys`).
+Live at `https://elysium.warga-digital.com` on a private VPS, behind OpenLiteSpeed with a
+Cloudflare-proxied A record. The dashboard is public; set `ELYS_WEB_PASSWORD` in the host
+`.env` to require HTTP Basic auth (user `ELYS_WEB_USER`, default `elys`).
 
 | Piece | Location |
 | --- | --- |
-| App + venv | `/home/valarion/apps/elysium` |
+| App + venv | `$APP_DIR` (e.g. `/opt/elysium`) |
 | Service | `systemd elysium-desk.service` → `127.0.0.1:18086` |
 | Proxy | OpenLiteSpeed vhost `deploy/vhost.conf` (`respBuffer 0`) |
-| DNS | proxied Cloudflare A record → 46.202.155.192 |
+| DNS | proxied Cloudflare A record → the host's public IP |
 
 ```bash
-# on the host, from the repo checkout
+# on the host, from the repo checkout (adjust user/paths in the unit first)
 python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m elys init
 .venv/bin/python -m elys discover --top 32

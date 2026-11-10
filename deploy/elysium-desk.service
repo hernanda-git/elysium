@@ -4,11 +4,12 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-User=valarion
-Group=valarion
-WorkingDirectory=/home/valarion/apps/elysium
-EnvironmentFile=/home/valarion/apps/elysium/.env
-ExecStart=/home/valarion/apps/elysium/.venv/bin/python -m elys serve --host 127.0.0.1 --port 18086
+# Adjust User/Group/WorkingDirectory to the checkout owner and path.
+User=elysium
+Group=elysium
+WorkingDirectory=/opt/elysium
+EnvironmentFile=/opt/elysium/.env
+ExecStart=/opt/elysium/.venv/bin/python -m elys serve --host 127.0.0.1 --port 18086
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
