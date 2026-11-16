@@ -17,6 +17,7 @@ from .config import Settings
 from .discovery import discover
 from .intel import Intel
 from .monitor import Monitor, Signal
+from .momentum import MomentumScanner
 from .paper import PaperBroker
 from .report import build_report, render
 from .store import Store
@@ -135,7 +136,7 @@ async def cmd_watch(args) -> int:
     store = Store(settings.db_path)
     intel = Intel(settings)
 
-    if store.whale_count() == 0:
+    if store.whale_count() == 0 and (settings.copy_enabled or not settings.momentum_enabled):
         print(yellow("watchlist empty — running discovery first"))
         await discover(settings, intel, store, limit=args.limit, top=args.top)
 
@@ -144,15 +145,26 @@ async def cmd_watch(args) -> int:
     count = monitor.load_whales(limit=settings.max_watch)
     replay_minutes = int(getattr(args, "minutes", 0) or 0)
     if replay_minutes:
+        # Replay prices the past trade stream; resting orders have no future to fill against.
+        settings.entry_mode = "market"
+        settings.copy_enabled = True
+        settings.momentum_enabled = False
         monitor._started = now_ts() - replay_minutes * 60
         monitor.lookback_s = replay_minutes * 60
         print(cyan(f"replay: rewound detection floor by {replay_minutes} min"))
-    if count == 0:
+    if count == 0 and not settings.momentum_enabled:
         print(red("no active whales; run `elys discover`"))
         return 1
+    if count == 0:
+        print(yellow("no active whales — screen-only mode"))
 
     paper = PaperBroker(settings, intel, store)
     strategy = CopyStrategy(settings, intel, store, paper)
+    scanner = (
+        MomentumScanner(settings, intel, store, paper)
+        if settings.momentum_enabled
+        else None
+    )
     tg = TelegramWebFeed(settings, store) if not args.no_tg else None
 
     stop = asyncio.Event()
@@ -202,6 +214,11 @@ async def cmd_watch(args) -> int:
             except Exception as exc:
                 log.warning("mark failed: %s", exc)
             try:
+                for decision in await strategy.check_pending():
+                    log.info("pending: %s %s", decision.action, decision.reason)
+            except Exception as exc:
+                log.warning("pending check failed: %s", exc)
+            try:
                 await asyncio.wait_for(stop.wait(), timeout=args.mark_interval)
             except asyncio.TimeoutError:
                 pass
@@ -234,6 +251,13 @@ async def cmd_watch(args) -> int:
                     last_chain = now
                 except Exception as exc:
                     log.debug("chain stats failed: %s", exc)
+            scan_line = ""
+            if scanner is not None:
+                scan = scanner.status()
+                scan_line = (
+                    f" | scan {scan['candidates']}c/{scan['open']}p"
+                    f" ({scan['scans']} runs)"
+                )
             print(
                 dim(
                     f"-- {status['wallets']} whales | blocks {status['blocks_seen']} "
@@ -241,7 +265,7 @@ async def cmd_watch(args) -> int:
                     f"signals {status['signals']} | hits {status['block_hits']} "
                     f"| 429s {intel.rate_limited} "
                     f"| errors {status['errors']} | equity {fmt_usd(equity)} "
-                    f"| open {desk['open']} | t+{now_ts() - started}s"
+                    f"| open {desk['open']}{scan_line} | t+{now_ts() - started}s"
                 ),
                 flush=True,
             )
@@ -267,20 +291,40 @@ async def cmd_watch(args) -> int:
         tg.on_event = lambda event: strategy.on_tg_event(event)
         await tg.run()
 
+    failure = {"failed": False}
+
+    async def guard(name: str, coro) -> None:
+        try:
+            await coro
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            failure["failed"] = True
+            log.exception("essential task %s failed: %s", name, exc)
+            stop.set()
+            raise
+
     tasks = [
-        asyncio.create_task(monitor.run(), name="monitor"),
-        asyncio.create_task(engine(), name="engine"),
-        asyncio.create_task(marker(), name="marker"),
-        asyncio.create_task(ticker(), name="ticker"),
+        asyncio.create_task(guard("engine", engine()), name="engine"),
+        asyncio.create_task(guard("marker", marker()), name="marker"),
+        asyncio.create_task(guard("ticker", ticker()), name="ticker"),
     ]
+    if count > 0:
+        tasks.append(asyncio.create_task(guard("monitor", monitor.run()), name="monitor"))
+    if scanner is not None:
+        tasks.append(asyncio.create_task(guard("momentum", scanner.run()), name="momentum"))
     if tg is not None:
-        tasks.append(asyncio.create_task(telegram_loop(), name="telegram"))
+        tasks.append(asyncio.create_task(guard("telegram", telegram_loop()), name="telegram"))
     if settings.rebalance_hours > 0 and not args.seconds and not replay_minutes:
-        tasks.append(asyncio.create_task(rebalancer(), name="rebalance"))
+        tasks.append(
+            asyncio.create_task(guard("rebalance", rebalancer()), name="rebalance")
+        )
 
     print(
         bold("ELYSIUM PAPER DESK")
         + f"  whales={count}  equity={fmt_usd(paper.equity()[2])}  "
+        + f"copy={'on' if settings.copy_enabled else 'off'}  "
+        + f"scan={'on' if scanner else 'off'}  "
         + f"stream={'on' if settings.stream_enabled else 'off'}  tg={'on' if tg else 'off'}"
     )
     try:
@@ -295,6 +339,8 @@ async def cmd_watch(args) -> int:
     finally:
         stop.set()
         monitor.stop()
+        if scanner is not None:
+            scanner.stop()
         if tg is not None:
             tg.stop()
         for task in tasks:
@@ -304,22 +350,18 @@ async def cmd_watch(args) -> int:
 
     desk = paper.status()
     print(dim(f"stopped: {desk}"))
-    return 0
+    return 1 if failure["failed"] else 0
 
 
 async def cmd_serve(args) -> int:
     """Run the desk and the read-only dashboard in one process."""
-    from .web import run_http_server
+    from .web import build_http_server
 
     settings = Settings.from_env()
     settings.ensure_dirs()
     Store(settings.db_path).close()  # create before the read-only web opens it
-    threading.Thread(
-        target=run_http_server,
-        args=(settings, args.host, args.port),
-        name="web",
-        daemon=True,
-    ).start()
+    server = build_http_server(settings, args.host, args.port)
+    threading.Thread(target=server.serve_forever, name="web", daemon=True).start()
     print(cyan(f"dashboard http://{args.host}:{args.port}"))
     return await cmd_watch(args)
 
@@ -352,6 +394,17 @@ async def cmd_status(args) -> int:
     print(f"  watchers       {store.whale_count()}")
     print(f"  signals        {len(store.query('SELECT id FROM signals'))}")
     print(f"  open positions {len(store.load_open_positions())}")
+    print(f"  resting limits {len(store.pending_entries())}")
+    momentum_open = sum(
+        1
+        for p in store.load_open_positions()
+        if str(p.get("strategy") or "copy") == "momentum"
+    )
+    print(
+        f"  momentum       scans {store.get_meta('scan_scans') or 0}"
+        f"  candidates {store.get_meta('scan_candidates') or 0}"
+        f"  open {momentum_open}"
+    )
     print(f"  equity         {fmt_usd(equity)}  (cash {fmt_usd(cash)}, positions {fmt_usd(pos_usd)})")
     count = store.query("SELECT COUNT(*) c FROM tg_posts")[0]["c"]
     print(f"  telegram posts {count}")

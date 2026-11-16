@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 from .util import now_ts
 
@@ -78,6 +79,7 @@ CREATE TABLE IF NOT EXISTS positions (
     last_ts       INTEGER,
     source_wallet TEXT,
     source_signal INTEGER,
+    strategy      TEXT NOT NULL DEFAULT 'copy',
     conviction    INTEGER NOT NULL DEFAULT 1,
     peak_px       REAL,
     last_px       REAL,
@@ -130,6 +132,16 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS pending_entries (
+    token       TEXT PRIMARY KEY,
+    symbol      TEXT,
+    limit_px    REAL NOT NULL,
+    expires_ts  INTEGER NOT NULL,
+    whale       TEXT,
+    whale_score REAL,
+    created_ts  INTEGER
+);
 """
 
 
@@ -137,15 +149,47 @@ class Store:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.path, check_same_thread=False)
+        # Autocommit mode: every write is visible immediately unless it is wrapped
+        # in ``transaction()``. That makes ledger transitions explicit rather than
+        # relying on sqlite3's implicit-transaction quirks.
+        self.conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA)
-        self.conn.commit()
+        self._migrate()
 
     def close(self) -> None:
         self.conn.close()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after the first deployed schema."""
+        pcols = {r["name"] for r in self.conn.execute("PRAGMA table_info(positions)")}
+        if "strategy" not in pcols:
+            self.conn.execute(
+                "ALTER TABLE positions ADD COLUMN strategy TEXT NOT NULL DEFAULT 'copy'"
+            )
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(pending_entries)")}
+        for name, decl in (
+            ("signal_ts", "INTEGER"),
+            ("signal_usd", "REAL"),
+            ("signal_liq", "REAL"),
+            ("conviction", "INTEGER NOT NULL DEFAULT 1"),
+        ):
+            if name not in cols:
+                self.conn.execute(f"ALTER TABLE pending_entries ADD COLUMN {name} {decl}")
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """One atomic ledger transition: all writes commit or none do."""
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            self.conn.rollback()
+            raise
+        else:
+            self.conn.commit()
 
     # ── meta ─────────────────────────────────────────────────────────────────
 
@@ -269,12 +313,13 @@ class Store:
     # ── positions ────────────────────────────────────────────────────────────
 
     def open_position(self, pos: dict) -> int:
+        pos = {**{"strategy": "copy"}, **pos}
         cur = self.conn.execute(
             """
             INSERT INTO positions (token,symbol,entry_px,qty,usd,entry_ts,last_ts,
-                                   source_wallet,source_signal,conviction,peak_px,last_px,fee_usd)
+                                   source_wallet,source_signal,strategy,conviction,peak_px,last_px,fee_usd)
             VALUES (:token,:symbol,:entry_px,:qty,:usd,:entry_ts,:last_ts,
-                    :source_wallet,:source_signal,:conviction,:peak_px,:peak_px,:fee_usd)
+                    :source_wallet,:source_signal,:strategy,:conviction,:peak_px,:peak_px,:fee_usd)
             """,
             pos,
         )
@@ -306,6 +351,89 @@ class Store:
     def close_position(self, position_id: int, **fields: Any) -> None:
         self.update_position(position_id, status="closed", **fields)
 
+    # ── atomic ledger transitions ────────────────────────────────────────────
+
+    def open_with_fill(self, pos: dict, fill: dict, cash: float) -> int:
+        """Insert a position, its buy fill and the new cash balance atomically."""
+        pos = {**{"strategy": "copy"}, **pos}
+        with self.transaction():
+            cur = self.conn.execute(
+                """
+                INSERT INTO positions (token,symbol,entry_px,qty,usd,entry_ts,last_ts,
+                                       source_wallet,source_signal,strategy,conviction,peak_px,last_px,fee_usd)
+                VALUES (:token,:symbol,:entry_px,:qty,:usd,:entry_ts,:last_ts,
+                        :source_wallet,:source_signal,:strategy,:conviction,:peak_px,:peak_px,:fee_usd)
+                """,
+                pos,
+            )
+            position_id = int(cur.lastrowid or 0)
+            self._insert_fill({**fill, "position_id": position_id})
+            self._set_meta("cash", round(cash, 8))
+        return position_id
+
+    def add_with_fill(self, position_id: int, qty: float, usd: float, px: float, fee: float,
+                      ts: int, fill: dict, cash: float) -> bool:
+        """Increase an open position and append the fill atomically."""
+        with self.transaction():
+            cur = self.conn.execute(
+                """
+                UPDATE positions
+                   SET qty = qty + ?, usd = usd + ?, entry_px = (usd + ?) / (qty + ?),
+                       conviction = conviction + 1, last_ts = ?, fee_usd = fee_usd + ?
+                 WHERE id = ? AND status = 'open'
+                """,
+                (qty, usd, usd, qty, ts, fee, position_id),
+            )
+            if cur.rowcount != 1:
+                return False
+            self._insert_fill({**fill, "position_id": position_id})
+            self._set_meta("cash", round(cash, 8))
+        return True
+
+    def close_with_fill(self, position_id: int, fields: dict, fill: dict, cash: float) -> bool:
+        """Close an open position exactly once and credit its fill atomically."""
+        with self.transaction():
+            assignments = ", ".join(f"{k}=?" for k in fields)
+            cur = self.conn.execute(
+                f"UPDATE positions SET {assignments}, status='closed' "
+                "WHERE id=? AND status='open'",
+                (*fields.values(), position_id),
+            )
+            if cur.rowcount != 1:
+                return False
+            self._insert_fill({**fill, "position_id": position_id})
+            self._set_meta("cash", round(cash, 8))
+        return True
+
+    def deactivate_all(self) -> None:
+        self.conn.execute("UPDATE whales SET active=0 WHERE active=1")
+
+    def claim_pending(self, token: str) -> dict | None:
+        """Remove and return a resting order atomically, or None if it vanished."""
+        with self.transaction():
+            row = self.conn.execute(
+                "SELECT * FROM pending_entries WHERE token=?", (token,)
+            ).fetchone()
+            if row is None:
+                return None
+            self.conn.execute("DELETE FROM pending_entries WHERE token=?", (token,))
+            return dict(row)
+
+    def _insert_fill(self, fill: dict) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO fills (ts,position_id,side,px,qty,usd,fee_usd,kind,tx)
+            VALUES (:ts,:position_id,:side,:px,:qty,:usd,:fee_usd,:kind,:tx)
+            """,
+            fill,
+        )
+
+    def _set_meta(self, key: str, value: Any) -> None:
+        self.conn.execute(
+            "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, str(value)),
+        )
+
     def load_open_positions(self) -> list[dict]:
         return [
             dict(r)
@@ -317,6 +445,53 @@ class Store:
             "SELECT * FROM positions WHERE token=? AND status='open' ORDER BY id LIMIT 1", (token,)
         ).fetchone()
         return dict(row) if row else None
+
+    def last_closed(self, token: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM positions WHERE token=? AND status='closed' ORDER BY exit_ts DESC LIMIT 1",
+            (token,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    # ── resting entries (retrace mode) ───────────────────────────────────────
+
+    def upsert_pending(self, order: dict) -> None:
+        order = {
+            "signal_ts": 0,
+            "signal_usd": 0.0,
+            "signal_liq": 0.0,
+            "conviction": 1,
+            **order,
+        }
+        self.conn.execute(
+            """
+            INSERT INTO pending_entries
+              (token,symbol,limit_px,expires_ts,whale,whale_score,created_ts,
+               signal_ts,signal_usd,signal_liq,conviction)
+            VALUES (:token,:symbol,:limit_px,:expires_ts,:whale,:whale_score,:created_ts,
+                    :signal_ts,:signal_usd,:signal_liq,:conviction)
+            ON CONFLICT(token) DO UPDATE SET
+                symbol=excluded.symbol, limit_px=MIN(limit_px, excluded.limit_px),
+                expires_ts=MAX(expires_ts, excluded.expires_ts),
+                whale=excluded.whale, whale_score=excluded.whale_score,
+                signal_ts=excluded.signal_ts, signal_usd=excluded.signal_usd,
+                signal_liq=excluded.signal_liq, conviction=excluded.conviction
+            """,
+            order,
+        )
+        self.conn.commit()
+
+    def pending_entries(self) -> list[dict]:
+        rows = self.conn.execute("SELECT * FROM pending_entries ORDER BY created_ts")
+        return [dict(r) for r in rows]
+
+    def pending_for_token(self, token: str) -> dict | None:
+        row = self.conn.execute("SELECT * FROM pending_entries WHERE token=?", (token,)).fetchone()
+        return dict(row) if row else None
+
+    def remove_pending(self, token: str) -> None:
+        self.conn.execute("DELETE FROM pending_entries WHERE token=?", (token,))
+        self.conn.commit()
 
     def positions(self, status: str | None = None) -> list[dict]:
         if status:
@@ -356,6 +531,28 @@ class Store:
             )
         ][::-1]
 
+    def equity_bounds(self) -> dict:
+        """Lifetime peak and maximum drawdown, without loading the curve."""
+        row = self.conn.execute(
+            """
+            WITH curve AS (
+                SELECT equity_usd, MAX(equity_usd) OVER (ORDER BY id) AS peak
+                  FROM equity
+            )
+            SELECT COUNT(*) AS n,
+                   MIN(equity_usd) AS low,
+                   MAX(peak) AS high,
+                   COALESCE(MAX(CASE WHEN peak > 0 THEN (peak - equity_usd) / peak END), 0.0) AS max_dd
+              FROM curve
+            """
+        ).fetchone()
+        return {
+            "n": int(row["n"] or 0),
+            "low": float(row["low"] or 0.0),
+            "high": float(row["high"] or 0.0),
+            "max_dd": float(row["max_dd"] or 0.0),
+        }
+
     # ── telegram ─────────────────────────────────────────────────────────────
 
     def add_tg_post(self, post: dict) -> bool:
@@ -378,13 +575,18 @@ class Store:
     # ── paper lifecycle ──────────────────────────────────────────────────────
 
     def reset_paper(self, start_equity: float) -> None:
-        self.conn.execute("DELETE FROM positions")
-        self.conn.execute("DELETE FROM fills")
-        self.conn.execute("DELETE FROM equity")
-        self.conn.execute("DELETE FROM signals")
-        self.conn.commit()
-        self.set_meta("cash", round(start_equity, 8))
-        self.set_meta("paper_started", now_ts())
+        with self.transaction():
+            self.conn.execute("DELETE FROM pending_entries")
+            self.conn.execute("DELETE FROM positions")
+            self.conn.execute("DELETE FROM fills")
+            self.conn.execute("DELETE FROM equity")
+            self.conn.execute("DELETE FROM signals")
+            self.conn.execute(
+                "DELETE FROM meta WHERE key IN "
+                "('halt_day','halt_reason','halt_global','halt_global_reason')"
+            )
+            self._set_meta("cash", round(start_equity, 8))
+            self._set_meta("paper_started", now_ts())
 
     def cash(self, start_equity: float) -> float:
         raw = self.get_meta("cash")

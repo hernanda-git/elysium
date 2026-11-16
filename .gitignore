@@ -9,3 +9,6 @@ data/
 sse_sample.txt
 tg_sample.html
 ely.html
+# local audit artifacts (private infrastructure details)
+AUDIT-*.md
+.audit_parent*.txt

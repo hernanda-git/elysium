@@ -10,6 +10,7 @@ from pathlib import Path
 from .config import Settings
 from .intel import Intel, IntelError
 from .scoring import WalletScore, score_wallet
+from .seeds import load_seed_addresses
 from .store import Store
 from .util import norm_addr, now_ts
 
@@ -56,6 +57,15 @@ async def discover(
                 merged["tokens"] = max(merged.get("tokens") or 0, row.get("tokens") or 0)
             windows.setdefault(addr, []).append(win)
 
+    failures = sum(1 for result in results if isinstance(result, Exception))
+    if not rows:
+        # Every leaderboard window failed: keep the existing roster and record a
+        # degraded pass instead of treating an outage as a confirmed empty screen.
+        log.error("discovery failed: %d/%d leaderboard windows errored", failures, len(results))
+        if persist and store is not None:
+            store.set_meta("last_discovery_error", now_ts())
+        return []
+
     try:
         hunters = await intel.hunters(limit=100)
     except IntelError as exc:
@@ -98,15 +108,23 @@ async def discover(
         reverse=True,
     )
     probe = prelim[: max(1, settings.discover_probe_trades)]
-    recent_trades = await intel.trades_many([addr for _, addr, _ in probe], limit=100)
-    missing = [addr for _, addr, _ in probe if addr not in recent_trades]
+    probed = {addr for _, addr, _ in probe}
+    seeded = [addr for addr in load_seed_addresses(settings.seed_path) if addr not in probed]
+    probe_addrs = [addr for _, addr, _ in probe] + seeded
+    recent_trades = await intel.trades_many(probe_addrs, limit=100)
+    missing = [addr for addr in probe_addrs if addr not in recent_trades]
     if missing:
         await asyncio.sleep(2.0)
         recent_trades.update(await intel.trades_many(missing, limit=100))
+    # Seed rows can be outside the leaderboard pages, so their record comes from
+    # the wallet profile instead of a leaderboard row.
+    off_board = [addr for addr in seeded if addr not in rows]
+    profiles = await intel.wallets(off_board) if off_board else {}
     log.info(
-        "discovery: %d candidates, probing %d trade tapes (429s so far: %d)",
+        "discovery: %d candidates, probing %d trade tapes (+%d seeded; 429s so far: %d)",
         len(candidates),
         len(probe),
+        len(seeded),
         intel.rate_limited,
     )
 
@@ -114,6 +132,15 @@ async def discover(
         score_wallet(row, None, settings, recent=recent_trades.get(addr, []))
         for _, addr, row in probe
     ]
+    for addr in seeded:
+        scored.append(
+            score_wallet(
+                rows.get(addr) or {"wallet": addr},
+                profiles.get(addr),
+                settings,
+                recent=recent_trades.get(addr, []),
+            )
+        )
 
     passed = [s for s in scored if s.passed]
     passed.sort(key=lambda s: s.score, reverse=True)
@@ -128,7 +155,12 @@ async def discover(
         for item in passed:
             store.upsert_whale(item, window="screen")
         if prune:
-            store.deactivate_whales([s.address for s in passed])
+            if passed:
+                store.deactivate_whales([s.address for s in passed])
+            else:
+                # A successful screen with zero survivors must not leave a stale
+                # roster trading; the next pass can repopulate it.
+                store.deactivate_all()
         store.set_meta("last_discovery", now_ts())
         store.set_meta("last_discovery_count", len(passed))
 

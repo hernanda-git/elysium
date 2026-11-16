@@ -37,6 +37,7 @@ class Report:
     signals_by_decision: dict[str, int] = field(default_factory=dict)
     skip_reasons: list[tuple[str, int]] = field(default_factory=list)
     whales_by_tier: dict[str, int] = field(default_factory=dict)
+    per_strategy: list[dict] = field(default_factory=list)
     per_whale: list[dict] = field(default_factory=list)
     exit_reasons: list[tuple[str, int]] = field(default_factory=list)
 
@@ -75,21 +76,16 @@ def build_report(store: Store, settings: Settings) -> Report:
     report.open_count = len(open_positions)
     report.open_cost = sum(float(p["usd"]) for p in open_positions)
     report.open_value = sum(float(p["qty"]) * float(p.get("last_px") or p["entry_px"]) for p in open_positions)
-    report.open_pnl = report.open_value - report.open_cost
+    report.open_pnl = report.open_value - report.open_cost - sum(
+        float(p.get("fee_usd") or 0.0) for p in open_positions
+    )
 
     report.cash = float(store.cash(settings.start_equity))
     report.equity = report.cash + report.open_value
 
-    curve = store.equity_curve(limit=20_000)
-    peak = report.start_equity
-    max_dd = 0.0
-    for point in curve:
-        value = float(point["equity_usd"])
-        peak = max(peak, value)
-        if peak > 0:
-            max_dd = max(max_dd, (peak - value) / peak)
-    report.peak_equity = peak
-    report.max_drawdown = max_dd
+    bounds = store.equity_bounds()
+    report.peak_equity = max(bounds["high"], report.start_equity)
+    report.max_drawdown = bounds["max_dd"]
 
     signals = store.query("SELECT decision, reason FROM signals")
     report.signals_total = len(signals)
@@ -112,6 +108,25 @@ def build_report(store: Store, settings: Settings) -> Report:
         for row in store.query(
             "SELECT exit_reason, COUNT(*) c FROM positions WHERE status='closed' "
             "GROUP BY exit_reason ORDER BY c DESC LIMIT 8"
+        )
+    ]
+
+    report.per_strategy = [
+        {
+            "strategy": row["strategy"] or "copy",
+            "trades": int(row["n"]),
+            "pnl": float(row["pnl"] or 0.0),
+            "wins": int(row["wins"] or 0),
+        }
+        for row in store.query(
+            """
+            SELECT strategy, COUNT(*) n, SUM(pnl_usd) pnl,
+                   SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END) wins
+              FROM positions
+             WHERE status='closed'
+             GROUP BY strategy
+             ORDER BY pnl DESC
+            """
         )
     ]
 
@@ -180,6 +195,14 @@ def render(report: Report) -> str:
     add("")
     add("WATCHLIST")
     add("  " + "  ".join(f"{tier}={count}" for tier, count in sorted(report.whales_by_tier.items())))
+    if report.per_strategy:
+        add("")
+        add("BY STRATEGY (closed)")
+        for row in report.per_strategy:
+            wr = row["wins"] / row["trades"] if row["trades"] else 0.0
+            add(
+                f"  {row['strategy']:<10} n={row['trades']:>3}  wr {wr:>5.0%}  pnl {fmt_usd(row['pnl'])}"
+            )
     if report.per_whale:
         add("")
         add("ATTRIBUTION (closed)")

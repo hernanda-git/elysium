@@ -60,6 +60,15 @@ def _list(key: str, default: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(part.strip() for part in raw.split(",") if part.strip())
 
 
+def _seed_path(key: str, default: str) -> Path | None:
+    """Curated seed file; an empty value disables seeding."""
+    raw = os.environ.get(key, default).strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    return path if path.is_absolute() else ROOT / path
+
+
 @dataclass(slots=True)
 class Settings:
     # data plane
@@ -78,8 +87,10 @@ class Settings:
     max_adds_per_token: int = 2
 
     # execution model
-    slippage_bps: float = 150.0
+    slippage_bps: float = 50.0
     fee_bps: float = 50.0
+    max_impact_bps: float = 500.0
+    fill_at_market: bool = True
 
     # copy rules
     min_whale_usd: float = 250.0
@@ -88,6 +99,51 @@ class Settings:
     min_token_age_s: int = 60
     copy_sells: bool = True
     ignore_symbols: tuple[str, ...] = ("WHYPE", "HYPE", "USDC", "USDT", "USDe")
+    entry_mode: str = "retrace"          # retrace | market
+    retrace_limit_pct: float = 0.02
+    retrace_ttl_s: int = 180
+    pop_exit: bool = True
+    max_chase_pct: float = 0.03
+    max_signal_latency_s: int = 180
+    max_trade_liq_pct: float = 0.01
+    reentry_guard_s: int = 600
+    stop_cooldown_s: int = 21_600
+    min_copy_score: float = 55.0
+    conviction_window_s: int = 600
+    min_conviction_wallets: int = 2
+    max_wallet_trades: int = 5_000
+    max_wallet_trades_per_token: int = 300
+    min_mcap_usd: float = 100_000.0
+    max_underwater_pct: float = 95.0
+    max_clusters: int = 3
+    max_insider_pct: float = 20.0
+    min_buy_ratio: float = 0.55
+    min_vol_accel: float = 1.5
+
+    # strategy selection
+    copy_enabled: bool = False
+    momentum_enabled: bool = True
+
+    # volume-climax screener (the primary edge)
+    momentum_interval_s: float = 30.0
+    momentum_universe: int = 200
+    momentum_min_mcap: float = 100_000.0
+    momentum_min_liq: float = 15_000.0
+    momentum_min_vol_1h: float = 1_000.0
+    momentum_min_age_s: int = 1_800
+    momentum_min_accel: float = 1.5
+    momentum_min_buy_ratio: float = 0.55
+    momentum_min_chg_1h: float = 0.0
+    momentum_max_chg_1h: float = 0.30
+    momentum_max_positions: int = 3
+    momentum_per_trade_usd: float = 25.0
+    momentum_max_new_per_scan: int = 2
+    momentum_cooldown_s: int = 3_600
+    momentum_stop_loss_pct: float = 0.10
+    momentum_take_profit_pct: float = 1.50
+    momentum_trail_arm_pct: float = 0.10
+    momentum_trail_giveback_pct: float = 0.30
+    momentum_max_hold_min: int = 120
 
     # exits
     stop_loss_pct: float = 0.35
@@ -95,6 +151,7 @@ class Settings:
     trail_arm_pct: float = 0.60
     trail_giveback_pct: float = 0.30
     max_hold_min: int = 240
+    impaired_haircut_pct: float = 0.90
 
     # discovery screen
     discover_windows: tuple[str, ...] = ("1d", "7d", "30d")
@@ -106,9 +163,10 @@ class Settings:
     discover_probe_trades: int = 80
     discover_max_idle_s: int = 3600
     discover_min_recent_buys: int = 1
+    seed_path: Path | None = field(default_factory=lambda: ROOT / "seed" / "whales.json")
 
     # monitoring
-    poll_interval_s: float = 20.0
+    poll_interval_s: float = 5.0
     stream_enabled: bool = True
     rebalance_hours: float = 6.0
 
@@ -155,19 +213,63 @@ class Settings:
             max_token_usd=_float("ELYS_MAX_TOKEN_USD", 50.0),
             max_daily_loss_pct=_float("ELYS_MAX_DAILY_LOSS_PCT", 0.10),
             max_adds_per_token=_int("ELYS_MAX_ADDS_PER_TOKEN", 2),
-            slippage_bps=_float("ELYS_SLIPPAGE_BPS", 150.0),
+            slippage_bps=_float("ELYS_SLIPPAGE_BPS", 50.0),
             fee_bps=_float("ELYS_FEE_BPS", 50.0),
+            max_impact_bps=_float("ELYS_MAX_IMPACT_BPS", 500.0),
+            fill_at_market=_bool("ELYS_FILL_AT_MARKET", True),
             min_whale_usd=_float("ELYS_MIN_WHALE_USD", 250.0),
             min_liq_usd=_float("ELYS_MIN_LIQ_USD", 15_000.0),
             max_top10_pct=_float("ELYS_MAX_TOP10_PCT", 45.0),
             min_token_age_s=_int("ELYS_MIN_TOKEN_AGE_S", 60),
             copy_sells=_bool("ELYS_COPY_SELLS", True),
             ignore_symbols=_list("ELYS_IGNORE_SYMBOLS", ("WHYPE", "HYPE", "USDC", "USDT", "USDe")),
+            entry_mode=_str("ELYS_ENTRY_MODE", "retrace").strip().lower(),
+            retrace_limit_pct=_float("ELYS_RETRACE_LIMIT_PCT", 0.02),
+            retrace_ttl_s=_int("ELYS_RETRACE_TTL_S", 180),
+            pop_exit=_bool("ELYS_POP_EXIT", True),
+            max_chase_pct=_float("ELYS_MAX_CHASE_PCT", 0.03),
+            max_signal_latency_s=_int("ELYS_MAX_SIGNAL_LATENCY_S", 180),
+            max_trade_liq_pct=_float("ELYS_MAX_TRADE_LIQ_PCT", 0.01),
+            reentry_guard_s=_int("ELYS_REENTRY_GUARD_S", 600),
+            stop_cooldown_s=_int("ELYS_STOP_COOLDOWN_S", 21_600),
+            min_copy_score=_float("ELYS_MIN_COPY_SCORE", 55.0),
+            conviction_window_s=_int("ELYS_CONVICTION_WINDOW_S", 600),
+            min_conviction_wallets=_int("ELYS_MIN_CONVICTION_WALLETS", 2),
+            max_wallet_trades=_int("ELYS_MAX_WALLET_TRADES", 5_000),
+            max_wallet_trades_per_token=_int("ELYS_MAX_WALLET_TRADES_PER_TOKEN", 300),
+            min_mcap_usd=_float("ELYS_MIN_MCAP_USD", 100_000.0),
+            max_underwater_pct=_float("ELYS_MAX_UNDERWATER_PCT", 95.0),
+            max_clusters=_int("ELYS_MAX_CLUSTERS", 3),
+            max_insider_pct=_float("ELYS_MAX_INSIDER_PCT", 20.0),
+            min_buy_ratio=_float("ELYS_MIN_BUY_RATIO", 0.55),
+            min_vol_accel=_float("ELYS_MIN_VOL_ACCEL", 1.5),
+            copy_enabled=_bool("ELYS_COPY_ENABLED", False),
+            momentum_enabled=_bool("ELYS_MOMENTUM", True),
+            momentum_interval_s=_float("ELYS_MOMENTUM_INTERVAL_S", 30.0),
+            momentum_universe=_int("ELYS_MOMENTUM_UNIVERSE", 200),
+            momentum_min_mcap=_float("ELYS_MOMENTUM_MIN_MCAP_USD", 100_000.0),
+            momentum_min_liq=_float("ELYS_MOMENTUM_MIN_LIQ_USD", 15_000.0),
+            momentum_min_vol_1h=_float("ELYS_MOMENTUM_MIN_VOL_1H_USD", 1_000.0),
+            momentum_min_age_s=_int("ELYS_MOMENTUM_MIN_AGE_S", 1_800),
+            momentum_min_accel=_float("ELYS_MOMENTUM_MIN_ACCEL", 1.5),
+            momentum_min_buy_ratio=_float("ELYS_MOMENTUM_MIN_BUY_RATIO", 0.55),
+            momentum_min_chg_1h=_float("ELYS_MOMENTUM_MIN_CHG_1H", 0.0),
+            momentum_max_chg_1h=_float("ELYS_MOMENTUM_MAX_CHG_1H", 0.30),
+            momentum_max_positions=_int("ELYS_MOMENTUM_MAX_POSITIONS", 3),
+            momentum_per_trade_usd=_float("ELYS_MOMENTUM_PER_TRADE_USD", 25.0),
+            momentum_max_new_per_scan=_int("ELYS_MOMENTUM_MAX_NEW_PER_SCAN", 2),
+            momentum_cooldown_s=_int("ELYS_MOMENTUM_COOLDOWN_S", 3_600),
+            momentum_stop_loss_pct=_float("ELYS_MOMENTUM_STOP_LOSS_PCT", 0.10),
+            momentum_take_profit_pct=_float("ELYS_MOMENTUM_TAKE_PROFIT_PCT", 1.50),
+            momentum_trail_arm_pct=_float("ELYS_MOMENTUM_TRAIL_ARM_PCT", 0.10),
+            momentum_trail_giveback_pct=_float("ELYS_MOMENTUM_TRAIL_GIVEBACK_PCT", 0.30),
+            momentum_max_hold_min=_int("ELYS_MOMENTUM_MAX_HOLD_MIN", 120),
             stop_loss_pct=_float("ELYS_STOP_LOSS_PCT", 0.35),
             take_profit_pct=_float("ELYS_TAKE_PROFIT_PCT", 1.50),
             trail_arm_pct=_float("ELYS_TRAIL_ARM_PCT", 0.60),
             trail_giveback_pct=_float("ELYS_TRAIL_GIVEBACK_PCT", 0.30),
             max_hold_min=_int("ELYS_MAX_HOLD_MIN", 240),
+            impaired_haircut_pct=_float("ELYS_IMPAIRED_HAIRCUT_PCT", 0.90),
             discover_windows=_list("ELYS_DISCOVER_WINDOWS", ("1d", "7d", "30d")),
             discover_limit=_int("ELYS_DISCOVER_LIMIT", 300),
             discover_min_trades=_int("ELYS_DISCOVER_MIN_TRADES", 20),
@@ -177,7 +279,8 @@ class Settings:
             discover_probe_trades=_int("ELYS_DISCOVER_PROBE_TRADES", 80),
             discover_max_idle_s=_int("ELYS_DISCOVER_MAX_IDLE_S", 3600),
             discover_min_recent_buys=_int("ELYS_DISCOVER_MIN_RECENT_BUYS", 1),
-            poll_interval_s=_float("ELYS_POLL_INTERVAL_S", 20.0),
+            seed_path=_seed_path("ELYS_SEED_PATH", "seed/whales.json"),
+            poll_interval_s=_float("ELYS_POLL_INTERVAL_S", 5.0),
             stream_enabled=_bool("ELYS_STREAM", True),
             rebalance_hours=_float("ELYS_REBALANCE_HOURS", 6.0),
             tg_channel=_str("ELYS_TG_CHANNEL", "elysiumecoalerts"),

@@ -190,6 +190,10 @@ class WebDB:
                     "FROM signals"
                 ).fetchone()
             )
+            pending = con.execute("SELECT COUNT(*) c FROM pending_entries").fetchone()["c"]
+            momentum_open = sum(
+                1 for r in opens if str(r.get("strategy") or "copy") == "momentum"
+            )
             heartbeat = int(meta.get("heartbeat_ts") or 0)
             now = now_ts()
             closed = int(agg["n"] or 0)
@@ -206,6 +210,10 @@ class WebDB:
                 "signals_total": int(sig["n"] or 0),
                 "signals_open": int(sig["opens"] or 0),
                 "signals_skip": int(sig["skips"] or 0),
+                "pending_count": int(pending or 0),
+                "momentum_open": int(momentum_open),
+                "scan_scans": int(meta.get("scan_scans") or 0),
+                "scan_candidates": int(meta.get("scan_candidates") or 0),
                 "stream": (meta.get("stream_connected") or "0") in ("1", "True", "true"),
                 "heartbeat_age": (now - heartbeat) if heartbeat else None,
                 "chain_head": int(meta.get("chain_head") or 0) or None,
@@ -432,6 +440,7 @@ def page_positions(db: WebDB, settings: Settings) -> str:
         closed = [dict(r) for r in con.execute(
             "SELECT * FROM positions WHERE status='closed' ORDER BY exit_ts DESC LIMIT 200"
         )]
+        pending = [dict(r) for r in con.execute("SELECT * FROM pending_entries ORDER BY created_ts")]
     finally:
         con.close()
 
@@ -439,7 +448,7 @@ def page_positions(db: WebDB, settings: Settings) -> str:
         if not rows:
             return '<div class="empty">None.</div>'
         head = (
-            "<tr><th>Token</th><th class='num'>Entry</th><th class='num'>"
+            "<tr><th>Token</th><th>Strategy</th><th class='num'>Entry</th><th class='num'>"
             + ("Exit" if closed_view else "Mark")
             + "</th><th class='num'>PnL</th><th class='num'>PnL%</th><th class='num'>Cost</th>"
             + ("<th>Exit reason</th>" if closed_view else "")
@@ -457,6 +466,7 @@ def page_positions(db: WebDB, settings: Settings) -> str:
             reason = f"<td class='muted'>{esc(p.get('exit_reason') or '')}</td>" if closed_view else ""
             out.append(
                 f"<tr><td>{esc(p.get('symbol') or short_addr(p['token']))}</td>"
+                f"<td class='muted'>{esc(p.get('strategy') or 'copy')}</td>"
                 f"<td class='num'>{esc(fmt_px(p['entry_px']))}</td>"
                 f"<td class='num'>{esc(fmt_px(mark))}</td>"
                 f"<td class='num {pnl_class(pnl)}'>{esc(fmt_usd(pnl))}</td>"
@@ -467,9 +477,28 @@ def page_positions(db: WebDB, settings: Settings) -> str:
             )
         return f"<table><thead>{head}</thead><tbody>{''.join(out)}</tbody></table>"
 
+    if pending:
+        pending_html = (
+            "<table><thead><tr><th>Token</th><th class='num'>Limit</th>"
+            "<th class='num'>Expires</th><th class='num'>Whale score</th></tr></thead><tbody>"
+            + "".join(
+                f"<tr><td>{esc(p.get('symbol') or short_addr(p['token']))}</td>"
+                f"<td class='num'>{esc(fmt_px(p['limit_px']))}</td>"
+                f"<td class='num muted'>{esc(when(p.get('expires_ts')))}</td>"
+                f"<td class='num'>{float(p.get('whale_score') or 0):.1f}</td></tr>"
+                for p in pending
+            )
+            + "</tbody></table>"
+        )
+    else:
+        pending_html = '<div class="empty">No resting limits.</div>'
+
     body = f"""
 <h1>Positions</h1>
-<p class="sub">Paper fills at the observed pool price plus slippage and fees.</p>
+<p class="sub">Paper fills at the market price seen at detection, plus pool impact and fees.
+Retrace mode rests a limit at the whale's fill and exits into the next buy.</p>
+<h2>Resting limits</h2>
+{pending_html}
 <h2>Open</h2>
 {block(opens, False)}
 <h2>Closed</h2>
@@ -652,9 +681,14 @@ class HtmlHandler(BaseHTTPRequestHandler):
         except (ValueError, TypeError):
             return False
         user, _, password = raw.partition(":")
-        return hmac.compare_digest(user, self.settings.web_user) and hmac.compare_digest(
-            password, self.settings.web_password
-        )
+        try:
+            return hmac.compare_digest(
+                user.encode("utf-8"), self.settings.web_user.encode("utf-8")
+            ) and hmac.compare_digest(
+                password.encode("utf-8"), self.settings.web_password.encode("utf-8")
+            )
+        except (UnicodeError, TypeError):
+            return False
 
     def _headers(self, status: int, content_type: str, length: int) -> None:
         self.send_response(status)
@@ -677,9 +711,16 @@ class HtmlHandler(BaseHTTPRequestHandler):
         if path == "/healthz":
             summary = self.db.summary(self.settings)
             stale = summary["heartbeat_age"] is None or summary["heartbeat_age"] > 120
+            # Health is public; account figures are not. Keep only liveness data.
+            health = {
+                "status": "stale" if stale else "ok",
+                "heartbeat_age": summary["heartbeat_age"],
+                "stream": summary["stream"],
+                "whales": summary["whales"],
+            }
             self._send(
                 200 if not stale else 503,
-                json.dumps({"status": "stale" if stale else "ok", **summary}),
+                json.dumps(health),
                 "application/json",
             )
             return
@@ -702,10 +743,17 @@ class HtmlHandler(BaseHTTPRequestHandler):
             self._send(503, "<h1>Database not initialised</h1>")
 
 
-def run_http_server(settings: Settings, host: str = "127.0.0.1", port: int = 18086) -> None:
+def build_http_server(
+    settings: Settings, host: str = "127.0.0.1", port: int = 18086
+) -> ThreadingHTTPServer:
+    """Bind synchronously so a bad port fails startup instead of a silent thread."""
     HtmlHandler.db = WebDB(settings.db_path)
     HtmlHandler.settings = settings
     server = ThreadingHTTPServer((host, port), HtmlHandler)
     server.daemon_threads = True
     log.info("dashboard on http://%s:%d", host, port)
-    server.serve_forever()
+    return server
+
+
+def run_http_server(settings: Settings, host: str = "127.0.0.1", port: int = 18086) -> None:
+    build_http_server(settings, host, port).serve_forever()

@@ -81,6 +81,33 @@ def test_reset_paper_restores_equity(tmp_path):
     settings = Settings(db_path=tmp_path / "t.db", log_path=tmp_path / "t.log", start_equity=500.0)
     store = Store(settings.db_path)
     store.set_meta("cash", 123.0)
+    store.upsert_pending({
+        "token": "0x" + "ee" * 20, "symbol": "T", "limit_px": 1.0,
+        "expires_ts": now_ts() + 60, "whale": "0x" + "ff" * 20,
+        "whale_score": 80.0, "created_ts": now_ts(),
+    })
     store.reset_paper(settings.start_equity)
     assert store.cash(settings.start_equity) == 500.0
     assert store.load_open_positions() == []
+    assert store.pending_entries() == []
+
+
+def test_pending_entry_upsert_and_remove(tmp_path):
+    store = Store(tmp_path / "t.db")
+    token = "0x" + "cc" * 20
+    base = {
+        "token": token,
+        "symbol": "T",
+        "limit_px": 1.0,
+        "expires_ts": now_ts() + 60,
+        "whale": "0x" + "dd" * 20,
+        "whale_score": 80.0,
+        "created_ts": now_ts(),
+    }
+    store.upsert_pending(base)
+    store.upsert_pending({**base, "limit_px": 0.9, "expires_ts": now_ts() + 120})
+    row = store.pending_for_token(token)
+    assert row["limit_px"] == 0.9
+    assert row["expires_ts"] > now_ts() + 60
+    store.remove_pending(token)
+    assert store.pending_for_token(token) is None

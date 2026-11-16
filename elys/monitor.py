@@ -37,6 +37,8 @@ class Signal:
     latency_ms: int
     whale_score: float
     whale_tier: str
+    whale_trades: int = 0
+    whale_tokens: int = 0
     detected_ts: int = field(default_factory=now_ts)
 
 
@@ -96,14 +98,25 @@ class Monitor:
         tasks = [asyncio.create_task(self._poll_loop(), name="poll")]
         if self.settings.stream_enabled:
             tasks.append(asyncio.create_task(self._stream_loop(), name="stream"))
+        stop_task = asyncio.create_task(self._stop.wait(), name="stop")
         try:
-            await self._stop.wait()
+            done, _ = await asyncio.wait(
+                [*tasks, stop_task], return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in done:
+                if task is stop_task:
+                    continue
+                exc = task.exception()
+                if exc is not None:
+                    raise exc
+                raise RuntimeError(f"monitor task {task.get_name()} exited")
         finally:
+            stop_task.cancel()
             for task in tasks:
                 task.cancel()
             for task in list(self._tasks):
                 task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(*tasks, stop_task, return_exceptions=True)
 
     # ── fast path ─────────────────────────────────────────────────────────────
 
@@ -183,7 +196,9 @@ class Monitor:
             self._last_ts[address] = newest
 
         emitted = 0
-        for trade in trades:
+        for trade in sorted(
+            trades, key=lambda t: (int(t.get("ts") or 0), str(t.get("hash") or ""))
+        ):
             ts = int(trade.get("ts") or 0)
             if ts < floor:
                 continue
@@ -200,7 +215,9 @@ class Monitor:
                 trades = await self.intel.wallet_trades(address, limit=40)
             except IntelError:
                 trades = []
-            for trade in trades:
+            for trade in sorted(
+                trades, key=lambda t: (int(t.get("ts") or 0), str(t.get("hash") or ""))
+            ):
                 if int(trade.get("ts") or 0) < floor:
                     continue
                 tx = str(trade.get("hash") or "").lstrip("0x").lower()
@@ -225,16 +242,15 @@ class Monitor:
             return False
         if side == "buy" and usd < self.settings.min_whale_usd:
             return False
-        if side == "sell" and self.store.position_for_token(token) is None:
+        if side == "sell" and (
+            self.store.position_for_token(token) is None
+            and self.store.pending_for_token(token) is None
+        ):
             return False
 
         key = f"{tx}:{token}:{side}"
         if key in self._seen:
             return False
-        self._seen[key] = now_ts()
-        if len(self._seen) > 50_000:
-            cutoff = now_ts() - 7200
-            self._seen = {k: v for k, v in self._seen.items() if v >= cutoff}
 
         signal = Signal(
             ts=ts,
@@ -250,13 +266,21 @@ class Monitor:
             latency_ms=max(0, (now_ts() - ts) * 1000),
             whale_score=float(whale.get("score") or 0.0),
             whale_tier=str(whale.get("tier") or ""),
+            whale_trades=int(whale.get("trades") or 0),
+            whale_tokens=int(whale.get("tokens") or 0),
         )
         try:
             self.queue.put_nowait(signal)
-            self.signals += 1
         except asyncio.QueueFull:
+            # Do not dedupe a trade that was never delivered: the next poll may
+            # still have it in the tape, and an exit must not be lost forever.
             log.warning("signal queue full; dropping %s %s", symbol, side)
             return False
+        self._seen[key] = now_ts()
+        if len(self._seen) > 50_000:
+            cutoff = now_ts() - 7200
+            self._seen = {k: v for k, v in self._seen.items() if v >= cutoff}
+        self.signals += 1
         return True
 
     # ── introspection ─────────────────────────────────────────────────────────
