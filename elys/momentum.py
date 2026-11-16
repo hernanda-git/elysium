@@ -187,7 +187,14 @@ class MomentumScanner:
             log.warning("scan log failed for %s: %s", cand.symbol, exc)
 
     async def scan_once(self) -> int:
-        rows = await self.intel.universe(limit=self.settings.momentum_universe)
+        try:
+            rows = await asyncio.wait_for(
+                self.intel.universe(limit=self.settings.momentum_universe), timeout=25.0
+            )
+        except asyncio.TimeoutError:
+            self.errors += 1
+            log.warning("universe scan timed out")
+            return 0
         self.scans += 1
         self.last_scan_ts = now_ts()
         cands = evaluate(rows, self.settings, self.last_scan_ts)
@@ -214,7 +221,11 @@ class MomentumScanner:
                 log.warning("momentum halted: %s", halt)
                 break
             try:
-                meta = await self.intel.token(cand.token)
+                meta = await asyncio.wait_for(self.intel.token(cand.token), timeout=10.0)
+            except asyncio.TimeoutError:
+                self.errors += 1
+                log.debug("token %s confirmation timed out", cand.symbol)
+                continue
             except IntelError as exc:
                 self.errors += 1
                 log.debug("token %s confirmation failed: %s", cand.symbol, exc)
