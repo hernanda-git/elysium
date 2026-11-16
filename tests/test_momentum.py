@@ -89,7 +89,7 @@ def test_young_token_is_rejected(tmp_path):
 
 
 def test_five_minute_spike_is_rejected(tmp_path):
-    assert evaluate([_row(chg_5m=9.0)], _settings(tmp_path)) == []
+    assert evaluate([_row(chg_5m=16.0)], _settings(tmp_path)) == []
 
 
 def test_candidates_are_ranked_by_score(tmp_path):

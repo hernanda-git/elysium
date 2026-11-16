@@ -99,7 +99,9 @@ def evaluate(rows: list[dict], settings: Settings, now: int | None = None) -> li
             continue
         if chg_1h < settings.momentum_min_chg_1h or chg_1h > settings.momentum_max_chg_1h:
             continue
-        if chg_5m is not None and (chg_5m > 8.0 or chg_5m < -5.0):
+        if chg_5m is not None and (
+            chg_5m > settings.momentum_max_chg_5m or chg_5m < -5.0
+        ):
             continue
         if top10 > settings.max_top10_pct or underwater > settings.max_underwater_pct:
             continue
@@ -237,7 +239,7 @@ class MomentumScanner:
             if px <= 0 or liq < self.settings.momentum_min_liq:
                 continue
             chg_5m = _f(meta, "chg_5m")
-            if chg_5m is not None and chg_5m > 8.0:
+            if chg_5m is not None and chg_5m > self.settings.momentum_max_chg_5m:
                 continue
             # Re-check existence after the awaited price lookup.
             if self.store.position_for_token(cand.token) is not None:

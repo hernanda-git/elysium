@@ -134,7 +134,8 @@ class Settings:
     momentum_min_accel: float = 1.5
     momentum_min_buy_ratio: float = 0.55
     momentum_min_chg_1h: float = 0.0
-    momentum_max_chg_1h: float = 0.30
+    momentum_max_chg_1h: float = 10.0
+    momentum_max_chg_5m: float = 15.0
     momentum_max_positions: int = 3
     momentum_per_trade_usd: float = 25.0
     momentum_max_new_per_scan: int = 2
@@ -254,7 +255,8 @@ class Settings:
             momentum_min_accel=_float("ELYS_MOMENTUM_MIN_ACCEL", 1.5),
             momentum_min_buy_ratio=_float("ELYS_MOMENTUM_MIN_BUY_RATIO", 0.55),
             momentum_min_chg_1h=_float("ELYS_MOMENTUM_MIN_CHG_1H", 0.0),
-            momentum_max_chg_1h=_float("ELYS_MOMENTUM_MAX_CHG_1H", 0.30),
+            momentum_max_chg_1h=_float("ELYS_MOMENTUM_MAX_CHG_1H", 10.0),
+            momentum_max_chg_5m=_float("ELYS_MOMENTUM_MAX_CHG_5M", 15.0),
             momentum_max_positions=_int("ELYS_MOMENTUM_MAX_POSITIONS", 3),
             momentum_per_trade_usd=_float("ELYS_MOMENTUM_PER_TRADE_USD", 25.0),
             momentum_max_new_per_scan=_int("ELYS_MOMENTUM_MAX_NEW_PER_SCAN", 2),
