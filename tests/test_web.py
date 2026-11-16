@@ -74,7 +74,7 @@ def test_summary_math(tmp_path):
 def test_overview_escapes_untrusted_symbols(tmp_path):
     settings, db = _fixture(tmp_path)
     html = page_overview(db, settings)
-    assert "Elysium Copy Desk" in html
+    assert "Elysium Desk" in html
     assert "&lt;b&gt;X&lt;/b&gt;" in html
     assert "<b>X</b>" not in html
     assert "-$0.00" not in html and "$0.00" in html

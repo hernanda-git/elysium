@@ -275,11 +275,12 @@ def layout(title: str, body: str, *, active: str, settings: Settings, db: "WebDB
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{esc(title)} · Elysium Copy Desk</title>
+<meta http-equiv="refresh" content="30">
+<title>{esc(title)} · Elysium Desk</title>
 <style>{CSS}</style>
 </head><body>
 <header class="top"><div class="inner">
-  <div class="brand">Elysium Copy Desk<span class="paper">paper</span></div>
+  <div class="brand">Elysium Desk<span class="paper">paper</span></div>
   <nav class="tabs">{tabs}</nav>
 </div></header>
 <div class="statusline">
@@ -289,6 +290,8 @@ def layout(title: str, body: str, *, active: str, settings: Settings, db: "WebDB
   <span>Chain <b data-live="chain_head">{live['chain_head']}</b></span>
   <span class="hide-sm">HYPE <b data-live="chain_hype_usd">{live['chain_hype_usd']}</b></span>
   <span class="hide-sm">Equity <b data-live="equity">{live['equity']}</b></span>
+  <span class="hide-sm">Screen <b data-live="scan_scans">{summary.get('scan_scans') or 0}</b> scans ·
+    <b data-live="momentum_open">{summary.get('momentum_open') or 0}</b> open</span>
 </div>
 <div class="wrap">
 {body}
