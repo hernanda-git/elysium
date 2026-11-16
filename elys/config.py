@@ -126,7 +126,7 @@ class Settings:
 
     # volume-climax screener (the primary edge)
     momentum_interval_s: float = 30.0
-    momentum_universe: int = 200
+    momentum_universe: int = 500
     momentum_min_mcap: float = 100_000.0
     momentum_min_liq: float = 15_000.0
     momentum_min_vol_1h: float = 1_000.0
@@ -246,7 +246,7 @@ class Settings:
             copy_enabled=_bool("ELYS_COPY_ENABLED", False),
             momentum_enabled=_bool("ELYS_MOMENTUM", True),
             momentum_interval_s=_float("ELYS_MOMENTUM_INTERVAL_S", 30.0),
-            momentum_universe=_int("ELYS_MOMENTUM_UNIVERSE", 200),
+            momentum_universe=_int("ELYS_MOMENTUM_UNIVERSE", 500),
             momentum_min_mcap=_float("ELYS_MOMENTUM_MIN_MCAP_USD", 100_000.0),
             momentum_min_liq=_float("ELYS_MOMENTUM_MIN_LIQ_USD", 15_000.0),
             momentum_min_vol_1h=_float("ELYS_MOMENTUM_MIN_VOL_1H_USD", 1_000.0),
