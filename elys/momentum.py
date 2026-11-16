@@ -73,15 +73,17 @@ def evaluate(rows: list[dict], settings: Settings, now: int | None = None) -> li
         liq = _f(row, "liq_usd")
         vol_1h = _f(row, "vol_1h")
         vol_5m = _f(row, "vol_5m")
+        vol_6h = _f(row, "vol_6h")
         chg_1h = _f(row, "chg_1h")
         chg_5m = _f(row, "chg_5m")
         net_1h = _f(row, "net_1h")
         top10 = _f(row, "top10_pct")
         underwater = _f(row, "underwater_pct")
         launch_ts = _f(row, "launch_ts")
-        if None in (mcap, liq, vol_1h, vol_5m, chg_1h, net_1h, top10, underwater, launch_ts):
+        if None in (mcap, liq, vol_1h, vol_5m, vol_6h, chg_1h, net_1h, top10, underwater, launch_ts):
             continue
         assert mcap is not None and liq is not None and vol_1h is not None and vol_5m is not None
+        assert vol_6h is not None
         assert chg_1h is not None and net_1h is not None and top10 is not None
         assert underwater is not None and launch_ts is not None
 
@@ -89,7 +91,10 @@ def evaluate(rows: list[dict], settings: Settings, now: int | None = None) -> li
             continue
         if vol_1h < settings.momentum_min_vol_1h or vol_1h <= 0:
             continue
-        accel = vol_5m * 12.0 / vol_1h
+        # Match the study: this hour's volume against the average of the prior
+        # five hours. vol_6h includes the current hour.
+        prior = max(0.0, (vol_6h - vol_1h) / 5.0)
+        accel = vol_1h / prior if prior > 0 else 99.0
         if accel < settings.momentum_min_accel:
             continue
         buys = int(row.get("buys_1h") or 0)

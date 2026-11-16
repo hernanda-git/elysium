@@ -244,7 +244,7 @@ rolling fields the explorer already computes. Recent launches from the last hour
 | market cap | ≥ `$100k` |
 | liquidity | ≥ `$15k` |
 | 1 h volume | ≥ `$1k` |
-| volume climax | `vol_5m × 12 / vol_1h` ≥ 1.5 |
+| volume climax | `vol_1h / avg(prior 5 h)` ≥ 1.5 |
 | buy pressure | `buys_1h / (buys_1h + sells_1h)` ≥ 0.55 |
 | net flow | `net_1h > 0` |
 | 1 h return | `chg_1h` ≥ 0 % (no upper cap) |

@@ -28,6 +28,7 @@ def _row(**over) -> dict:
         "liq_usd": 100_000.0,
         "vol_1h": 10_000.0,
         "vol_5m": 2_000.0,
+        "vol_6h": 30_000.0,
         "buys_1h": 60,
         "sells_1h": 40,
         "net_1h": 500.0,
@@ -67,12 +68,12 @@ def test_candidate_passes_all_gates(tmp_path):
     assert len(cands) == 1
     cand = cands[0]
     assert cand.token == TOKEN
-    assert cand.accel == 2.4
+    assert cand.accel == 2.5
     assert 0.59 < cand.buy_ratio < 0.61
 
 
 def test_low_volume_acceleration_is_rejected(tmp_path):
-    assert evaluate([_row(vol_5m=300.0)], _settings(tmp_path)) == []
+    assert evaluate([_row(vol_6h=80_000.0)], _settings(tmp_path)) == []
 
 
 def test_negative_net_flow_is_rejected(tmp_path):
@@ -96,8 +97,8 @@ def test_five_minute_spike_is_rejected(tmp_path):
 
 
 def test_candidates_are_ranked_by_score(tmp_path):
-    strong = _row(vol_5m=3_000.0, buys_1h=80)
-    weak = _row(token="0x" + "66" * 20, symbol="WEAK", vol_5m=1_700.0, buys_1h=55)
+    strong = _row(vol_6h=20_000.0, buys_1h=80)
+    weak = _row(token="0x" + "66" * 20, symbol="WEAK", vol_6h=40_000.0, buys_1h=55)
     cands = evaluate([weak, strong], _settings(tmp_path))
     assert [c.token for c in cands] == [TOKEN, "0x" + "66" * 20]
 
