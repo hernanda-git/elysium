@@ -95,7 +95,7 @@ flowchart LR
     end
 
     subgraph Screen
-        UNI[/tokens/universe<br/>1 request / 30 s/] --> EVAL[volume climax<br/>+ quality gates]
+        UNI[/tokens/universe 500<br/>+ recent launches/] --> EVAL[volume climax<br/>+ quality gates]
         EVAL -->|pass| PAPER
     end
 
@@ -119,9 +119,10 @@ lag cannot push a trade past a cursor, while a per-wallet decode cooldown bounds
 request rate. This is the honest latency of copying on this venue today; it is good
 enough for a minute-scale memecoin trade, not for out-running an MEV bot.
 
-The volume-climax screen does not wait on the decoded trade feed. It samples the token
-universe once per `ELYS_MOMENTUM_INTERVAL_S` (30 s) and confirms a candidate with one
-fresh token request, so its execution latency is the scan interval plus that request.
+The volume-climax screen does not wait on the decoded trade feed. It samples the top 500
+tokens once per `ELYS_MOMENTUM_INTERVAL_S` (30 s), probes up to 20 recent launches, and
+confirms a candidate with one fresh token request, so its execution latency is the scan
+interval plus those requests.
 The trade-off is coverage: a climax that opens and closes inside one interval is missed.
 
 ---
@@ -234,8 +235,9 @@ explorer profile for each address.
 ## Volume-climax screen
 
 `elys watch` starts the screen by default. Every `ELYS_MOMENTUM_INTERVAL_S` (30 s) it
-fetches `GET /api/tokens/universe?sort=vol&limit=200` — one request — and evaluates the
-rolling fields the explorer already computes. A candidate must pass every gate:
+fetches `GET /api/tokens/universe?sort=vol&limit=500` — one request — and evaluates the
+rolling fields the explorer already computes. Recent launches from the last hour (up to
+20) are also probed and must pass the same gates. A candidate must pass every gate:
 
 | Gate | Default |
 | --- | --- |
@@ -245,8 +247,8 @@ rolling fields the explorer already computes. A candidate must pass every gate:
 | volume climax | `vol_5m × 12 / vol_1h` ≥ 1.5 |
 | buy pressure | `buys_1h / (buys_1h + sells_1h)` ≥ 0.55 |
 | net flow | `net_1h > 0` |
-| 1 h return | 0 % ≤ `chg_1h` ≤ 30 % |
-| 5 m spike | `chg_5m` between −5 % and +8 % |
+| 1 h return | `chg_1h` ≥ 0 % (no upper cap) |
+| 5 m spike | `chg_5m` between −5 % and +15 % |
 | age | ≥ 30 min |
 | safety | `hp_verdict=clean`, no rug flags, top-10 ≤ 45 %, underwater ≤ 95 %, clusters ≤ 3, insider ≤ 20 % |
 
