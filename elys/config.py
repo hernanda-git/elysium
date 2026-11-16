@@ -131,6 +131,8 @@ class Settings:
     momentum_min_liq: float = 15_000.0
     momentum_min_vol_1h: float = 1_000.0
     momentum_min_age_s: int = 1_800
+    momentum_launch_window_s: int = 3_600
+    momentum_launch_probe: int = 20
     momentum_min_accel: float = 1.5
     momentum_min_buy_ratio: float = 0.55
     momentum_min_chg_1h: float = 0.0
@@ -252,6 +254,8 @@ class Settings:
             momentum_min_liq=_float("ELYS_MOMENTUM_MIN_LIQ_USD", 15_000.0),
             momentum_min_vol_1h=_float("ELYS_MOMENTUM_MIN_VOL_1H_USD", 1_000.0),
             momentum_min_age_s=_int("ELYS_MOMENTUM_MIN_AGE_S", 1_800),
+            momentum_launch_window_s=_int("ELYS_MOMENTUM_LAUNCH_WINDOW_S", 3_600),
+            momentum_launch_probe=_int("ELYS_MOMENTUM_LAUNCH_PROBE", 20),
             momentum_min_accel=_float("ELYS_MOMENTUM_MIN_ACCEL", 1.5),
             momentum_min_buy_ratio=_float("ELYS_MOMENTUM_MIN_BUY_RATIO", 0.55),
             momentum_min_chg_1h=_float("ELYS_MOMENTUM_MIN_CHG_1H", 0.0),

@@ -53,8 +53,12 @@ def evaluate(rows: list[dict], settings: Settings, now: int | None = None) -> li
     now = now or now_ts()
     ignore = {s.upper() for s in settings.ignore_symbols}
     out: list[Candidate] = []
+    seen: set[str] = set()
     for row in rows:
         token = norm_addr(row.get("token"))
+        if not token or token in seen:
+            continue
+        seen.add(token)
         symbol = str(row.get("symbol") or "")
         if not token or symbol.upper() in ignore:
             continue
@@ -188,6 +192,31 @@ class MomentumScanner:
         except Exception as exc:  # logging must never stop the scan
             log.warning("scan log failed for %s: %s", cand.symbol, exc)
 
+    async def _launch_rows(self, now: int) -> list[dict]:
+        """Probe recent launches that may not be in the volume-ranked universe yet."""
+        try:
+            launches = await asyncio.wait_for(self.intel.launches(limit=50), timeout=10.0)
+        except (asyncio.TimeoutError, IntelError) as exc:
+            log.debug("launch probe failed: %s", exc)
+            return []
+        out: list[dict] = []
+        for row in launches:
+            ts = int(row.get("launch_ts") or 0)
+            if ts and now - ts > self.settings.momentum_launch_window_s:
+                continue
+            token = norm_addr(row.get("token"))
+            if not token:
+                continue
+            try:
+                meta = await asyncio.wait_for(self.intel.token(token), timeout=8.0)
+            except (asyncio.TimeoutError, IntelError):
+                continue
+            if isinstance(meta, dict) and meta:
+                out.append(meta)
+            if len(out) >= self.settings.momentum_launch_probe:
+                break
+        return out
+
     async def scan_once(self) -> int:
         try:
             rows = await asyncio.wait_for(
@@ -199,6 +228,9 @@ class MomentumScanner:
             return 0
         self.scans += 1
         self.last_scan_ts = now_ts()
+        fresh = await self._launch_rows(self.last_scan_ts)
+        if fresh:
+            rows = list(rows) + fresh
         cands = evaluate(rows, self.settings, self.last_scan_ts)
         self.candidates = len(cands)
         new = 0

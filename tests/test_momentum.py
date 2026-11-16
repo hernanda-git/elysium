@@ -55,6 +55,9 @@ class FakeIntel:
     async def universe(self, limit: int = 200) -> list[dict]:
         return self.rows
 
+    async def launches(self, limit: int = 50) -> list[dict]:
+        return []
+
     async def token(self, address: str, ttl: float = 4.0) -> dict:
         return self.meta
 
