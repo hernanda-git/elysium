@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS signals (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     ts          INTEGER NOT NULL,
     wallet      TEXT NOT NULL,
+    strategy    TEXT NOT NULL DEFAULT 'copy',
     token       TEXT NOT NULL,
     symbol      TEXT,
     side        TEXT NOT NULL,
@@ -169,6 +170,17 @@ class Store:
             self.conn.execute(
                 "ALTER TABLE positions ADD COLUMN strategy TEXT NOT NULL DEFAULT 'copy'"
             )
+        scols = {r["name"] for r in self.conn.execute("PRAGMA table_info(signals)")}
+        if "strategy" not in scols:
+            self.conn.execute(
+                "ALTER TABLE signals ADD COLUMN strategy TEXT NOT NULL DEFAULT 'copy'"
+            )
+        # Rows written before the split used a synthetic wallet name for screen
+        # entries; retag the legacy rows so the two feeds stay distinguishable.
+        self.conn.execute(
+            "UPDATE signals SET strategy='momentum' "
+            "WHERE strategy='copy' AND wallet IN ('momentum','screen')"
+        )
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(pending_entries)")}
         for name, decl in (
             ("signal_ts", "INTEGER"),
@@ -283,12 +295,13 @@ class Store:
     # ── signals ──────────────────────────────────────────────────────────────
 
     def log_signal(self, signal: dict) -> int | None:
+        signal = {"strategy": "copy", **signal}
         cur = self.conn.execute(
             """
             INSERT OR IGNORE INTO signals
-              (ts,wallet,token,symbol,side,px,usd,tx,block,source,latency_ms,
+              (ts,wallet,strategy,token,symbol,side,px,usd,tx,block,source,latency_ms,
                whale_score,whale_tier,decision,reason,token_meta)
-            VALUES (:ts,:wallet,:token,:symbol,:side,:px,:usd,:tx,:block,:source,:latency_ms,
+            VALUES (:ts,:wallet,:strategy,:token,:symbol,:side,:px,:usd,:tx,:block,:source,:latency_ms,
                     :whale_score,:whale_tier,:decision,:reason,:token_meta)
             """,
             signal,

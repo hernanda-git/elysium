@@ -46,6 +46,12 @@ def test_signal_decision_update(tmp_path):
     assert row["decision"] == "open" and row["reason"] == "ok"
 
 
+def test_signal_strategy_defaults_to_copy(tmp_path):
+    store = Store(tmp_path / "t.db")
+    store.log_signal(_signal())
+    assert store.recent_signals(1)[0]["strategy"] == "copy"
+
+
 def test_whale_upsert_and_deactivate(tmp_path):
     store = Store(tmp_path / "t.db")
     score = WalletScore(

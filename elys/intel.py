@@ -29,6 +29,8 @@ class _TokenBucket:
     """
 
     def __init__(self, rate: float = 4.0, burst: float = 6.0, max_rate: float = 6.0) -> None:
+        # ``burst`` is the token-bucket capacity; discovery uses a small bucket so
+        # its probe bursts cannot drain the budget the live monitor and screen share.
         self.rate = rate
         self.max_rate = max_rate
         self.capacity = burst
@@ -74,7 +76,14 @@ class Intel:
     * ``GET /api/stats`` chain head, block time, HYPE price
     """
 
-    def __init__(self, settings: Settings, *, concurrency: int = 3, rate: float = 4.0) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        concurrency: int = 3,
+        rate: float = 4.0,
+        burst: float = 6.0,
+    ) -> None:
         self.settings = settings
         self._client = httpx.AsyncClient(
             base_url=settings.intel_base.rstrip("/"),
@@ -83,7 +92,7 @@ class Intel:
             limits=httpx.Limits(max_connections=32, max_keepalive_connections=16),
         )
         self._sem = asyncio.Semaphore(concurrency)
-        self._bucket = _TokenBucket(rate=rate)
+        self._bucket = _TokenBucket(rate=rate, burst=burst)
         self._cooldown_until = 0.0
         self._cache: dict[str, tuple[float, Any]] = {}
         self.rate_limited = 0

@@ -92,8 +92,15 @@ class Monitor:
         task.add_done_callback(self._tasks.discard)
 
     async def run(self) -> None:
-        if not self.whales:
-            raise RuntimeError("no active whales; run discovery first")
+        # The first discovery pass can land after startup (an empty ledger is a
+        # normal reset), so wait for the watchlist instead of exiting. The
+        # rebalancer assigns ``self.whales`` in place.
+        while not self.whales:
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=1.0)
+                return
+            except asyncio.TimeoutError:
+                pass
         log.info("monitor watching %d wallets (stream=%s)", len(self.whales), self.settings.stream_enabled)
         tasks = [asyncio.create_task(self._poll_loop(), name="poll")]
         if self.settings.stream_enabled:

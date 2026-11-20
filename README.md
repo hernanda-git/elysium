@@ -371,8 +371,9 @@ always paired with a label, no gradients, no icon-only actions, no card per scal
 ## Deployment
 
 Live at `https://elysium.warga-digital.com` on a private VPS, behind OpenLiteSpeed with a
-Cloudflare-proxied A record. The dashboard is public; set `ELYS_WEB_PASSWORD` in the host
-`.env` to require HTTP Basic auth (user `ELYS_WEB_USER`, default `elys`).
+Cloudflare-proxied A record. HTTP Basic auth uses `ELYS_WEB_USER` (default `elys`) and
+`ELYS_WEB_PASSWORD` from the host `.env`; leave the password empty only for a deliberately
+public dashboard.
 
 | Piece | Location |
 | --- | --- |

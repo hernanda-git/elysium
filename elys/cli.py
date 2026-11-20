@@ -135,10 +135,13 @@ async def cmd_watch(args) -> int:
     configure_logging(settings, verbose=args.verbose)
     store = Store(settings.db_path)
     intel = Intel(settings)
+    # Discovery probes ~90 tapes/profiles in one burst. Give it its own small
+    # bucket so a six-hour sweep cannot starve the live monitor and the screen.
+    discovery_intel = Intel(settings, concurrency=2, rate=2.0, burst=2.0)
 
     if store.whale_count() == 0 and (settings.copy_enabled or not settings.momentum_enabled):
         print(yellow("watchlist empty — running discovery first"))
-        await discover(settings, intel, store, limit=args.limit, top=args.top)
+        await discover(settings, discovery_intel, store, limit=args.limit, top=args.top)
 
     queue: asyncio.Queue[Signal] = asyncio.Queue(maxsize=2000)
     monitor = Monitor(settings, intel, store, queue)
@@ -156,7 +159,7 @@ async def cmd_watch(args) -> int:
         print(red("no active whales; run `elys discover`"))
         return 1
     if count == 0:
-        print(yellow("no active whales — screen-only mode"))
+        print(yellow("no active whales yet — monitor starts after the first discovery"))
 
     paper = PaperBroker(settings, intel, store)
     strategy = CopyStrategy(settings, intel, store, paper)
@@ -186,6 +189,7 @@ async def cmd_watch(args) -> int:
                 {
                     "ts": signal.ts,
                     "wallet": signal.wallet,
+                    "strategy": "copy",
                     "token": signal.token,
                     "symbol": signal.symbol,
                     "side": signal.side,
@@ -256,7 +260,7 @@ async def cmd_watch(args) -> int:
                 scan = scanner.status()
                 scan_line = (
                     f" | scan {scan['candidates']}c/{scan['open']}p"
-                    f" ({scan['scans']} runs)"
+                    f" ({scan['scans']} runs, {scan['last_scan_ms']}ms)"
                 )
             print(
                 dim(
@@ -278,7 +282,7 @@ async def cmd_watch(args) -> int:
             except asyncio.TimeoutError:
                 pass
             try:
-                rows = await discover(settings, intel, store)
+                rows = await discover(settings, discovery_intel, store)
                 monitor.whales = {w["address"]: w for w in store.load_whales(limit=settings.max_watch)}
                 monitor.watch = set(monitor.whales)
                 log.info("rebalanced watchlist: %d wallets", len(rows))
@@ -309,7 +313,7 @@ async def cmd_watch(args) -> int:
         asyncio.create_task(guard("marker", marker()), name="marker"),
         asyncio.create_task(guard("ticker", ticker()), name="ticker"),
     ]
-    if count > 0:
+    if count > 0 or scanner is not None:
         tasks.append(asyncio.create_task(guard("monitor", monitor.run()), name="monitor"))
     if scanner is not None:
         tasks.append(asyncio.create_task(guard("momentum", scanner.run()), name="momentum"))
@@ -347,6 +351,7 @@ async def cmd_watch(args) -> int:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await intel.close()
+        await discovery_intel.close()
 
     desk = paper.status()
     print(dim(f"stopped: {desk}"))

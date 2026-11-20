@@ -132,7 +132,7 @@ class Settings:
     momentum_min_vol_1h: float = 1_000.0
     momentum_min_age_s: int = 1_800
     momentum_launch_window_s: int = 3_600
-    momentum_launch_probe: int = 20
+    momentum_launch_probe: int = 8
     momentum_min_accel: float = 1.5
     momentum_min_buy_ratio: float = 0.55
     momentum_min_chg_1h: float = 0.0
@@ -163,7 +163,7 @@ class Settings:
     discover_min_tokens: int = 3
     discover_min_realized: float = 500.0
     discover_min_wr: float = 0.50
-    discover_probe_trades: int = 80
+    discover_probe_trades: int = 48
     discover_max_idle_s: int = 3600
     discover_min_recent_buys: int = 1
     seed_path: Path | None = field(default_factory=lambda: ROOT / "seed" / "whales.json")
@@ -255,7 +255,7 @@ class Settings:
             momentum_min_vol_1h=_float("ELYS_MOMENTUM_MIN_VOL_1H_USD", 1_000.0),
             momentum_min_age_s=_int("ELYS_MOMENTUM_MIN_AGE_S", 1_800),
             momentum_launch_window_s=_int("ELYS_MOMENTUM_LAUNCH_WINDOW_S", 3_600),
-            momentum_launch_probe=_int("ELYS_MOMENTUM_LAUNCH_PROBE", 20),
+            momentum_launch_probe=_int("ELYS_MOMENTUM_LAUNCH_PROBE", 8),
             momentum_min_accel=_float("ELYS_MOMENTUM_MIN_ACCEL", 1.5),
             momentum_min_buy_ratio=_float("ELYS_MOMENTUM_MIN_BUY_RATIO", 0.55),
             momentum_min_chg_1h=_float("ELYS_MOMENTUM_MIN_CHG_1H", 0.0),
@@ -282,7 +282,7 @@ class Settings:
             discover_min_tokens=_int("ELYS_DISCOVER_MIN_TOKENS", 3),
             discover_min_realized=_float("ELYS_DISCOVER_MIN_REALIZED", 500.0),
             discover_min_wr=_float("ELYS_DISCOVER_MIN_WR", 0.50),
-            discover_probe_trades=_int("ELYS_DISCOVER_PROBE_TRADES", 80),
+            discover_probe_trades=_int("ELYS_DISCOVER_PROBE_TRADES", 48),
             discover_max_idle_s=_int("ELYS_DISCOVER_MAX_IDLE_S", 3600),
             discover_min_recent_buys=_int("ELYS_DISCOVER_MIN_RECENT_BUYS", 1),
             seed_path=_seed_path("ELYS_SEED_PATH", "seed/whales.json"),

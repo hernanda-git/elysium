@@ -4,7 +4,7 @@ from elys.config import Settings
 from elys.scoring import WalletScore
 from elys.store import Store
 from elys.util import now_ts
-from elys.web import WebDB, page_alerts, page_overview, page_whales
+from elys.web import WebDB, page_alerts, page_overview, page_signals, page_whales
 
 
 def _fixture(tmp_path):
@@ -88,3 +88,56 @@ def test_whales_and_alerts_render(tmp_path):
     alerts = page_alerts(db, settings)
     assert "rug warning" in alerts
     assert "elysium.eco/screener/" in alerts
+
+
+def _signal(**over) -> dict:
+    base = {
+        "ts": now_ts(),
+        "wallet": "0x" + "aa" * 20,
+        "token": "0x" + "66" * 20,
+        "symbol": "TST",
+        "side": "buy",
+        "px": 0.01,
+        "usd": 25.0,
+        "tx": "0x" + "77" * 32,
+        "block": 1,
+        "source": "test",
+        "latency_ms": 1000,
+        "whale_score": 0.0,
+        "whale_tier": "",
+        "decision": "open",
+        "reason": "",
+        "token_meta": None,
+    }
+    base.update(over)
+    return base
+
+
+def test_signals_page_separates_screen_entries_from_copy_signals(tmp_path):
+    settings = Settings(db_path=tmp_path / "split.db", log_path=tmp_path / "split.log")
+    store = Store(settings.db_path)
+    store.log_signal(
+        _signal(
+            wallet="screen",
+            strategy="momentum",
+            symbol="MOMO",
+            tx="0x" + "11" * 32,
+            reason="accel 4.2 buy 0.61",
+        )
+    )
+    store.log_signal(
+        _signal(
+            wallet="0x" + "bb" * 20,
+            symbol="WHALE",
+            tx="0x" + "22" * 32,
+            reason="copied",
+        )
+    )
+
+    html = page_signals(WebDB(settings.db_path), settings)
+    screen_part, copy_part = html.split("Copy signals", 1)
+    assert "Screen entries" in screen_part
+    assert "MOMO" in screen_part and "accel 4.2 buy 0.61" in screen_part
+    assert "WHALE" in copy_part
+    assert "0x0000" not in html
+    assert "Whale size" not in html

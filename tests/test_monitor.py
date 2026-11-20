@@ -133,6 +133,24 @@ def test_stream_only_uses_matching_hashes(tmp_path):
     assert queue.get_nowait().token == TOKEN
 
 
+def test_monitor_waits_for_a_watchlist_before_exiting(tmp_path):
+    settings = _setting(tmp_path, stream_enabled=False)
+    store = _store_with_whale(settings)
+    monitor = Monitor(settings, FakeIntel([]), store, asyncio.Queue())
+
+    async def scenario() -> None:
+        task = asyncio.create_task(monitor.run())
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        monitor.load_whales()  # the rebalancer assigns the first roster
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        monitor.stop()
+        await asyncio.wait_for(task, timeout=2.0)
+
+    asyncio.run(scenario())
+
+
 def test_block_stream_touched_normalises():
     txs = [
         {"from_a": "0" * 24 + "aa" * 20, "hash": "x"},

@@ -127,6 +127,7 @@ JS = """
     if(key==="win_rate") return pct(v);
     if(key==="heartbeat_age") return v==null ? "\\u2013" : v+"s ago";
     if(key==="stream") return v ? "up" : "down";
+    if(key==="scan_last_ms") return (v/1000).toFixed(1)+"s";
     if(typeof v==="number" && Math.abs(v)>=1000) return v.toLocaleString();
     return esc(v);
   }
@@ -214,6 +215,7 @@ class WebDB:
                 "momentum_open": int(momentum_open),
                 "scan_scans": int(meta.get("scan_scans") or 0),
                 "scan_candidates": int(meta.get("scan_candidates") or 0),
+                "scan_last_ms": int(meta.get("scan_last_ms") or 0),
                 "stream": (meta.get("stream_connected") or "0") in ("1", "True", "true"),
                 "heartbeat_age": (now - heartbeat) if heartbeat else None,
                 "chain_head": int(meta.get("chain_head") or 0) or None,
@@ -256,6 +258,21 @@ def tag(decision: str | None) -> str:
     return f'<span class="tag {cls}">{esc(d)}</span>'
 
 
+def signal_strategy(s: dict) -> str:
+    """Ledger rows written before the split used a synthetic wallet name."""
+    if str(s.get("strategy") or "") == "momentum":
+        return "momentum"
+    if str(s.get("wallet") or "") in ("momentum", "screen"):
+        return "momentum"
+    return "copy"
+
+
+def signal_source_html(s: dict) -> str:
+    if signal_strategy(s) == "momentum":
+        return '<span class="tag">screen</span>'
+    return f"<span class='mono'>{esc(short_addr(s.get('wallet') or ''))}</span>"
+
+
 def layout(title: str, body: str, *, active: str, settings: Settings, db: "WebDB") -> str:
     body = body.replace("<table>", '<div class="scroll"><table>').replace("</table>", "</table></div>")
     summary = db.summary(settings)
@@ -266,6 +283,7 @@ def layout(title: str, body: str, *, active: str, settings: Settings, db: "WebDB
         "chain_head": f"{summary['chain_head']:,}" if summary.get("chain_head") else "–",
         "chain_hype_usd": fmt_usd(summary.get("chain_hype_usd")),
         "equity": fmt_usd(summary.get("equity")),
+        "scan_last_ms": f"{(summary.get('scan_last_ms') or 0) / 1000:.1f}s",
     }
     tabs = "".join(
         f'<a href="{href}" class="{"on" if href == active else ""}">{label}</a>'
@@ -291,7 +309,8 @@ def layout(title: str, body: str, *, active: str, settings: Settings, db: "WebDB
   <span class="hide-sm">HYPE <b data-live="chain_hype_usd">{live['chain_hype_usd']}</b></span>
   <span class="hide-sm">Equity <b data-live="equity">{live['equity']}</b></span>
   <span class="hide-sm">Screen <b data-live="scan_scans">{summary.get('scan_scans') or 0}</b> scans ·
-    <b data-live="momentum_open">{summary.get('momentum_open') or 0}</b> open</span>
+    <b data-live="momentum_open">{summary.get('momentum_open') or 0}</b> open ·
+    <b data-live="scan_last_ms">{live['scan_last_ms']}</b></span>
 </div>
 <div class="wrap">
 {body}
@@ -362,7 +381,7 @@ def page_overview(db: WebDB, settings: Settings) -> str:
             f"<td class='num {pnl_class(float(p['qty']) * float(p.get('last_px') or p['entry_px']) - float(p['usd']))}'>"
             f"{esc(fmt_usd(float(p['qty']) * float(p.get('last_px') or p['entry_px']) - float(p['usd'])))}</td>"
             f"<td class='num muted'>{esc(ago(p['entry_ts']))}</td>"
-            f"<td class='mono hide-sm'>{esc(short_addr(p.get('source_wallet') or ''))}</td>"
+            f"<td class='mono hide-sm'>{'screen' if str(p.get('strategy') or '') == 'momentum' else esc(short_addr(p.get('source_wallet') or ''))}</td>"
             f"</tr>"
             for p in opens
         )
@@ -379,25 +398,27 @@ def page_overview(db: WebDB, settings: Settings) -> str:
         rows = "".join(
             f"<tr>"
             f"<td class='muted'>{esc(when(s['ts']))}</td>"
-            f"<td class='mono'>{esc(short_addr(s['wallet']))}</td>"
+            f"<td>{signal_source_html(s)}</td>"
             f"<td>{esc(s.get('symbol') or short_addr(s['token']))}</td>"
             f"<td>{esc((s.get('side') or '').upper())}</td>"
             f"<td class='num'>{esc(fmt_usd(s.get('usd')))}</td>"
             f"<td class='num muted'>{esc(fmt_px(s.get('px')))}</td>"
             f"<td>{tag(s.get('decision'))}</td>"
             f"<td class='muted'>{esc(s.get('reason') or '')}</td>"
-            f"<td class='num muted hide-sm'>{int((s.get('latency_ms') or 0) / 1000)}s</td>"
+            f"<td class='num muted hide-sm'>"
+            f"{'–' if signal_strategy(s) == 'momentum' else str(int((s.get('latency_ms') or 0) / 1000)) + 's'}"
+            f"</td>"
             f"</tr>"
             for s in signals
         )
         signals_html = (
-            "<table><thead><tr><th>Time</th><th>Whale</th><th>Token</th><th>Side</th>"
-            "<th class='num'>Whale size</th><th class='num'>Price</th><th>Decision</th>"
+            "<table><thead><tr><th>Time</th><th>Source</th><th>Token</th><th>Side</th>"
+            "<th class='num'>Size</th><th class='num'>Price</th><th>Decision</th>"
             "<th>Reason</th><th class='num hide-sm'>Latency</th></tr></thead>"
             f"<tbody>{rows}</tbody></table>"
         )
     else:
-        signals_html = '<div class="empty">No signals yet. The desk opens positions when a watched wallet buys above the floor.</div>'
+        signals_html = '<div class="empty">No signals yet.</div>'
 
     if whales:
         rows = "".join(
@@ -416,10 +437,36 @@ def page_overview(db: WebDB, settings: Settings) -> str:
     else:
         watch_html = '<div class="empty">No watchlist yet. Run discovery.</div>'
 
+    mode_line = " · ".join(
+        [
+            f"volume-climax screen {'on' if settings.momentum_enabled else 'off'}",
+            (
+                f"whale copy on (floor {esc(fmt_usd(settings.min_whale_usd))})"
+                if settings.copy_enabled
+                else "whale copy off"
+            ),
+        ]
+    )
+    screen_note = (
+        f"Screen · {esc(fmt_usd(settings.momentum_per_trade_usd))}/trade · "
+        f"stop {settings.momentum_stop_loss_pct * 100:.0f}% · "
+        f"target {settings.momentum_take_profit_pct * 100:.0f}% · "
+        f"trail {settings.momentum_trail_arm_pct * 100:.0f}%/"
+        f"{settings.momentum_trail_giveback_pct * 100:.0f}% · "
+        f"max {settings.momentum_max_hold_min}m"
+    )
+    copy_note = (
+        f"Copy · {esc(fmt_usd(settings.per_trade_usd))}/trade · "
+        f"stop {settings.stop_loss_pct * 100:.0f}% · "
+        f"target {settings.take_profit_pct * 100:.0f}% · "
+        f"trail {settings.trail_arm_pct * 100:.0f}%/"
+        f"{settings.trail_giveback_pct * 100:.0f}% · "
+        f"max {settings.max_hold_min}m"
+    )
+
     body = f"""
 <h1>Overview</h1>
-<p class="sub">Paper copy desk. Positions open only when a watched wallet buys above
-{esc(fmt_usd(settings.min_whale_usd))} and the token passes the safety gates.</p>
+<p class="sub">Paper only. {mode_line}.</p>
 {figs}
 <h2>Open positions</h2>
 {positions_html}
@@ -427,11 +474,8 @@ def page_overview(db: WebDB, settings: Settings) -> str:
 {signals_html}
 <h2>Watchlist</h2>
 {watch_html}
-<p class="note">Re-discovery every {settings.rebalance_hours:g}h ·
-per trade {esc(fmt_usd(settings.per_trade_usd))} ·
-stop {settings.stop_loss_pct * 100:.0f}% · target {settings.take_profit_pct * 100:.0f}% ·
-trail {settings.trail_arm_pct * 100:.0f}%/{settings.trail_giveback_pct * 100:.0f}% ·
-max hold {settings.max_hold_min}m</p>
+<p class="note">{screen_note}<br>{copy_note}<br>
+Re-discovery every {settings.rebalance_hours:g}h.</p>
 """
     return layout("Overview", body, active="/", settings=settings, db=db)
 
@@ -513,15 +557,44 @@ Retrace mode rests a limit at the whale's fill and exits into the next buy.</p>
 def page_signals(db: WebDB, settings: Settings) -> str:
     con = db.connect()
     try:
-        rows = [dict(r) for r in con.execute("SELECT * FROM signals ORDER BY id DESC LIMIT 300")]
+        screen = [dict(r) for r in con.execute(
+            "SELECT * FROM signals WHERE strategy='momentum' OR wallet IN ('momentum','screen') "
+            "ORDER BY id DESC LIMIT 100"
+        )]
+        copy = [dict(r) for r in con.execute(
+            "SELECT * FROM signals WHERE strategy!='momentum' "
+            "AND wallet NOT IN ('momentum','screen') ORDER BY id DESC LIMIT 200"
+        )]
         reasons = [dict(r) for r in con.execute(
-            "SELECT reason, COUNT(*) c FROM signals WHERE decision='skip' "
-            "GROUP BY reason ORDER BY c DESC LIMIT 10"
+            "SELECT CASE WHEN strategy='momentum' OR wallet IN ('momentum','screen') "
+            "THEN 'momentum' ELSE 'copy' END AS strategy, reason, COUNT(*) c "
+            "FROM signals WHERE decision='skip' GROUP BY strategy, reason "
+            "ORDER BY c DESC LIMIT 10"
         )]
     finally:
         con.close()
 
-    if rows:
+    if screen:
+        body_rows = "".join(
+            f"<tr><td class='muted'>{esc(when(s['ts']))}</td>"
+            f"<td>{esc(s.get('symbol') or short_addr(s['token']))}</td>"
+            f"<td>{esc((s.get('side') or '').upper())}</td>"
+            f"<td class='num'>{esc(fmt_usd(s.get('usd')))}</td>"
+            f"<td class='num muted'>{esc(fmt_px(s.get('px')))}</td>"
+            f"<td>{tag(s.get('decision'))}</td>"
+            f"<td class='muted'>{esc(s.get('reason') or '')}</td></tr>"
+            for s in screen
+        )
+        screen_html = (
+            "<table><thead><tr><th>Time</th><th>Token</th><th>Side</th>"
+            "<th class='num'>Size</th><th class='num'>Price</th><th>Decision</th>"
+            "<th>Reason</th></tr></thead>"
+            f"<tbody>{body_rows}</tbody></table>"
+        )
+    else:
+        screen_html = '<div class="empty">No screen entries yet.</div>'
+
+    if copy:
         body_rows = "".join(
             f"<tr><td class='muted'>{esc(when(s['ts']))}</td>"
             f"<td class='mono'>{esc(short_addr(s['wallet']))}</td>"
@@ -532,22 +605,28 @@ def page_signals(db: WebDB, settings: Settings) -> str:
             f"<td>{tag(s.get('decision'))}</td>"
             f"<td class='muted'>{esc(s.get('reason') or '')}</td>"
             f"<td class='num muted'>{int((s.get('latency_ms') or 0) / 1000)}s</td></tr>"
-            for s in rows
+            for s in copy
         )
-        table = (
-            "<table><thead><tr><th>Time</th><th>Whale</th><th>Token</th><th>Side</th>"
-            "<th class='num'>Whale size</th><th class='num'>Price</th><th>Decision</th>"
+        copy_html = (
+            "<table><thead><tr><th>Time</th><th>Wallet</th><th>Token</th><th>Side</th>"
+            "<th class='num'>Size</th><th class='num'>Price</th><th>Decision</th>"
             "<th>Reason</th><th class='num'>Latency</th></tr></thead>"
             f"<tbody>{body_rows}</tbody></table>"
         )
     else:
-        table = '<div class="empty">No signals recorded.</div>'
+        copy_html = (
+            '<div class="empty">No copy signals. The monitor logs one when a watched '
+            "wallet trades above the floor.</div>"
+        )
 
     skip = "".join(
-        f"<tr><td>{esc(r['reason'] or '–')}</td><td class='num'>{r['c']}</td></tr>" for r in reasons
+        f"<tr><td>{esc(r['strategy'])}</td><td>{esc(r['reason'] or '–')}</td>"
+        f"<td class='num'>{r['c']}</td></tr>"
+        for r in reasons
     )
     skip_html = (
-        "<table><thead><tr><th>Skip reason</th><th class='num'>Count</th></tr></thead>"
+        "<table><thead><tr><th>Strategy</th><th>Skip reason</th>"
+        "<th class='num'>Count</th></tr></thead>"
         f"<tbody>{skip}</tbody></table>"
         if reasons
         else '<div class="empty">No skipped signals.</div>'
@@ -555,10 +634,12 @@ def page_signals(db: WebDB, settings: Settings) -> str:
 
     body = f"""
 <h1>Signals</h1>
-<p class="sub">Every detected whale swap, whether copied or refused. Latency is the gap
-between the trade timestamp and detection.</p>
-<h2>Recent</h2>
-{table}
+<p class="sub">Two feeds. Screen entries are volume-climax paper buys; copy signals are
+whale swaps observed by the monitor. Decision is the paper action.</p>
+<h2>Screen entries</h2>
+{screen_html}
+<h2>Copy signals</h2>
+{copy_html}
 <h2>Why signals were skipped</h2>
 {skip_html}
 """

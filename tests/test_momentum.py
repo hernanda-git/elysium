@@ -84,6 +84,20 @@ def test_small_mcap_is_rejected(tmp_path):
     assert evaluate([_row(mcap=50_000.0)], _settings(tmp_path)) == []
 
 
+def test_missing_mcap_is_recomputed_from_price_and_supply(tmp_path):
+    row = _row(px=2.0, supply_circ=600_000.0)
+    row.pop("mcap")
+    cands = evaluate([row], _settings(tmp_path))
+    assert len(cands) == 1
+    assert cands[0].mcap == 1_200_000.0
+
+
+def test_missing_mcap_without_supply_is_rejected(tmp_path):
+    row = _row()
+    row.pop("mcap")
+    assert evaluate([row], _settings(tmp_path)) == []
+
+
 def test_untested_honeypot_is_rejected(tmp_path):
     assert evaluate([_row(hp_verdict="untested")], _settings(tmp_path)) == []
 
@@ -109,6 +123,35 @@ def _scanner(tmp_path, rows=None, **over):
     intel = FakeIntel(rows=rows)
     broker = PaperBroker(settings, intel, store)
     return MomentumScanner(settings, intel, store, broker), store, broker
+
+
+def test_launch_probes_run_concurrently(tmp_path):
+    scanner, _store, _broker = _scanner(tmp_path, momentum_launch_probe=20)
+
+    class ProbeIntel(FakeIntel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.inflight = 0
+            self.max_inflight = 0
+
+        async def launches(self, limit: int = 50) -> list[dict]:
+            return [
+                {"token": "0x" + f"{i:040x}", "launch_ts": now_ts() - 60}
+                for i in range(20)
+            ]
+
+        async def token(self, address: str, ttl: float = 4.0) -> dict:
+            self.inflight += 1
+            self.max_inflight = max(self.max_inflight, self.inflight)
+            await asyncio.sleep(0.02)
+            self.inflight -= 1
+            return {"token": address, "px": 1.0}
+
+    probe = ProbeIntel()
+    scanner.intel = probe
+    rows = asyncio.run(scanner._launch_rows(now_ts()))
+    assert len(rows) == 20
+    assert probe.max_inflight > 1
 
 
 def test_scan_opens_a_momentum_position(tmp_path):

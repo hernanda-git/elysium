@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import time
 from dataclasses import dataclass
 
 from .config import Settings
@@ -70,6 +71,14 @@ def evaluate(rows: list[dict], settings: Settings, now: int | None = None) -> li
             continue
 
         mcap = _f(row, "mcap")
+        px = _f(row, "px") or 0.0
+        if mcap is None and px > 0:
+            # The API refuses mcap for thin launches (``mcap_refusal``), but the
+            # supply and price are still quoted. Recompute it so those rows reach
+            # the liquidity and volume gates instead of dying as "missing data".
+            supply = _f(row, "supply_circ") or _f(row, "supply")
+            if supply is not None and supply > 0:
+                mcap = px * supply
         liq = _f(row, "liq_usd")
         vol_1h = _f(row, "vol_1h")
         vol_5m = _f(row, "vol_5m")
@@ -122,7 +131,6 @@ def evaluate(rows: list[dict], settings: Settings, now: int | None = None) -> li
             continue
         if now - int(launch_ts) < settings.momentum_min_age_s:
             continue
-        px = _f(row, "px") or 0.0
         if px <= 0:
             continue
         score = accel * buy_ratio * math.log1p(vol_1h) * (1.0 + max(chg_1h, 0.0))
@@ -160,6 +168,7 @@ class MomentumScanner:
         self.opened = 0
         self.errors = 0
         self.last_scan_ts = 0
+        self.last_scan_ms = 0
 
     def stop(self) -> None:
         self._stop.set()
@@ -177,7 +186,8 @@ class MomentumScanner:
             self.store.log_signal(
                 {
                     "ts": ts,
-                    "wallet": "momentum",
+                    "wallet": "screen",
+                    "strategy": "momentum",
                     "token": cand.token,
                     "symbol": cand.symbol,
                     "side": "buy",
@@ -200,35 +210,49 @@ class MomentumScanner:
     async def _launch_rows(self, now: int) -> list[dict]:
         """Probe recent launches that may not be in the volume-ranked universe yet."""
         try:
-            launches = await asyncio.wait_for(self.intel.launches(limit=50), timeout=10.0)
+            launches = await asyncio.wait_for(self.intel.launches(limit=50), timeout=6.0)
         except (asyncio.TimeoutError, IntelError) as exc:
             log.debug("launch probe failed: %s", exc)
             return []
-        out: list[dict] = []
+        tokens: list[str] = []
+        seen: set[str] = set()
         for row in launches:
             ts = int(row.get("launch_ts") or 0)
             if ts and now - ts > self.settings.momentum_launch_window_s:
                 continue
             token = norm_addr(row.get("token"))
-            if not token:
-                continue
-            try:
-                meta = await asyncio.wait_for(self.intel.token(token), timeout=8.0)
-            except (asyncio.TimeoutError, IntelError):
-                continue
-            if isinstance(meta, dict) and meta:
-                out.append(meta)
-            if len(out) >= self.settings.momentum_launch_probe:
+            if token and token not in seen:
+                seen.add(token)
+                tokens.append(token)
+            if len(tokens) >= self.settings.momentum_launch_probe:
                 break
-        return out
+        if not tokens:
+            return []
+        # Probe concurrently with a short per-call cap. Serial probes at the old
+        # 8 s timeout stretched one scan to ~3 minutes; the screen missed most
+        # five-minute climaxes before it could see them.
+        gate = asyncio.Semaphore(5)
+
+        async def one(token: str) -> dict | None:
+            async with gate:
+                try:
+                    meta = await asyncio.wait_for(self.intel.token(token), timeout=3.0)
+                except (asyncio.TimeoutError, IntelError):
+                    return None
+            return meta if isinstance(meta, dict) and meta else None
+
+        probed = await asyncio.gather(*(one(t) for t in tokens), return_exceptions=True)
+        return [row for row in probed if isinstance(row, dict)]
 
     async def scan_once(self) -> int:
+        started = time.monotonic()
         try:
             rows = await asyncio.wait_for(
                 self.intel.universe(limit=self.settings.momentum_universe), timeout=25.0
             )
         except asyncio.TimeoutError:
             self.errors += 1
+            self.last_scan_ms = int((time.monotonic() - started) * 1000)
             log.warning("universe scan timed out")
             return 0
         self.scans += 1
@@ -306,10 +330,12 @@ class MomentumScanner:
                 )
             else:
                 self._log(cand, px, size, "skip", result.reason)
+        self.last_scan_ms = int((time.monotonic() - started) * 1000)
         self.store.set_meta("scan_last_ts", self.last_scan_ts)
         self.store.set_meta("scan_candidates", self.candidates)
         self.store.set_meta("scan_scans", self.scans)
         self.store.set_meta("scan_opened", self.opened)
+        self.store.set_meta("scan_last_ms", self.last_scan_ms)
         return new
 
     async def run(self) -> None:
@@ -329,8 +355,9 @@ class MomentumScanner:
                 self.errors += 1
                 log.warning("scan failed: %s", exc)
             try:
+                elapsed = self.last_scan_ms / 1000
                 await asyncio.wait_for(
-                    self._stop.wait(), timeout=self.settings.momentum_interval_s
+                    self._stop.wait(), timeout=max(0.0, self.settings.momentum_interval_s - elapsed)
                 )
             except asyncio.TimeoutError:
                 pass
@@ -343,4 +370,5 @@ class MomentumScanner:
             "errors": self.errors,
             "open": self._open_count(),
             "last_scan_ts": self.last_scan_ts,
+            "last_scan_ms": self.last_scan_ms,
         }
